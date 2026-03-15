@@ -1,94 +1,71 @@
-import requests
+﻿import requests
 import os
 import time
-from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
-import asyncio
-import logging
+import json
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
-# Твои данные
 BOT_TOKEN = "8746910864:AAFiSK85KM_6OGsDHxEIGBm2xWkxIXWfMDc"
 OCR_KEY = "sk_QRYWLB9EDt7ntMmseUq9XcHvRSjW0T7i"
+API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}/"
 
-logging.basicConfig(level=logging.INFO)
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher()
+def send_message(chat_id, text):
+    requests.post(API_URL + "sendMessage", json={"chat_id": chat_id, "text": text})
 
+def handle_update(update):
+    if 'message' not in update or 'photo' not in update['message']:
+        return
+    chat_id = update['message']['chat']['id']
+    send_message(chat_id, "📸 Обрабатываю...")
 
-@dp.message(Command("start"))
-async def start(message: types.Message):
-    await message.answer("👋 Отправь фото чека")
+    file_id = update['message']['photo'][-1]['file_id']
+    file_info = requests.get(API_URL + f"getFile?file_id={file_id}").json()
+    file_path = file_info['result']['file_path']
+    file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
 
+    # Скачиваем фото
+    img_data = requests.get(file_url).content
+    with open("receipt.jpg", "wb") as f:
+        f.write(img_data)
 
-@dp.message(lambda m: m.photo)
-async def photo(message: types.Message):
-    await message.answer("📸 Обрабатываю...")
-
-    file = await bot.get_file(message.photo[-1].file_id)
-    await bot.download_file(file.file_path, "receipt.jpg")
-
-    # 1. Отправляем фото
+    # Отправляем в ocrbase
     with open("receipt.jpg", "rb") as f:
-        files = {"file": ("receipt.jpg", f, "image/jpeg")}
-        headers = {"Authorization": f"Bearer {OCR_KEY}"}
-
         r = requests.post(
             "https://api.ocrbase.dev/v1/parse",
-            headers=headers,
-            files=files,
-            timeout=30
+            headers={"Authorization": f"Bearer {OCR_KEY}"},
+            files={"file": f}
         )
 
     if r.status_code == 200:
         data = r.json()
-        job_id = data.get('id')
-
-        if not job_id:
-            await message.answer("❌ Нет ID задачи")
-            return
-
-        await message.answer("⏳ Задача в очереди, жду результат...")
-
-        # 2. Ждем и проверяем статус
-        for _ in range(10):  # 10 попыток
-            time.sleep(2)  # ждем 2 секунды
-
-            status_r = requests.get(
-                f"https://api.ocrbase.dev/v1/jobs/{job_id}",
-                headers={"Authorization": f"Bearer {OCR_KEY}"}
-            )
-
-            if status_r.status_code == 200:
-                job_data = status_r.json()
-                status = job_data.get('status')
-
-                if status == 'completed':
-                    # Задача выполнена
-                    text = job_data.get('markdownResult') or job_data.get('text', '')
-                    if text:
-                        await message.answer(f"✅ {text[:4000]}")
-                    else:
-                        await message.answer("❌ Текст не найден")
-                    break
-                elif status == 'failed':
-                    await message.answer(f"❌ Ошибка обработки")
-                    break
-                elif status == 'pending' or status == 'processing':
-                    await message.answer(f"⏳ Еще обрабатывается...")
-            else:
-                await message.answer(f"❌ Ошибка проверки статуса")
-                break
+        text = data.get('text', '')
+        if text:
+            send_message(chat_id, f"✅ {text[:4000]}")
         else:
-            await message.answer("❌ Таймаут ожидания")
+            send_message(chat_id, "❌ Текст не найден")
     else:
-        await message.answer(f"❌ Ошибка: {r.status_code}")
+        send_message(chat_id, f"❌ Ошибка: {r.status_code}")
 
     os.remove("receipt.jpg")
 
+class Handler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        content_len = int(self.headers.get('Content-Length', 0))
+        post_body = self.rfile.read(content_len)
+        update = json.loads(post_body)
+        handle_update(update)
+        self.send_response(200)
+        self.end_headers()
 
-async def main():
-    await dp.start_polling(bot)
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is running")
 
+def main():
+    port = int(os.environ.get('PORT', 10000))
+    server = HTTPServer(("0.0.0.0", port), Handler)
+    print(f"Starting bot on port {port}")
+    server.serve_forever()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
