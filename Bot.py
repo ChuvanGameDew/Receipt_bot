@@ -347,8 +347,15 @@ def get_google_sheet():
         return None
 
 def save_to_sheet(data):
-    """Zapis danych do Google Sheets DOKŁADNIE jak w tabeli"""
+    """Zapis danych do Google Sheets z czyszczeniem i pustymi kolumnami A i H"""
     logging.info("=== PRÓBA ZAPISU DO GOOGLE SHEETS ===")
+    
+    # Funkcja do czyszczenia danych
+    def clean_value(value):
+        """Czyści wartość: UNKNOWN -> pusty string, usuwa spacje, zamienia na string"""
+        if value == "UNKNOWN" or not value:
+            return ""
+        return str(value).strip()
     
     try:
         sheet = get_google_sheet()
@@ -359,24 +366,25 @@ def save_to_sheet(data):
         # KOLEJNOŚĆ KOLUMN w Twojej tabeli:
         # A: puste | B: data | C: dostawca | D: numer paragonu | E: płatność | F: expense | G: kategoria | H: puste | I: kwota
         row = [
-            '',                                    # Kolumna A - pusta
-            data.get('date', 'UNKNOWN'),           # Kolumna B - data
-            data.get('supplier', 'UNKNOWN'),       # Kolumna C - dostawca
-            data.get('bill_number', 'UNKNOWN'),    # Kolumna D - numer paragonu (nazwa pliku!)
-            data.get('payment', 'UNKNOWN'),        # Kolumna E - płatność
-            data.get('expense_item', 'UNKNOWN'),   # Kolumna F - expense item
-            data.get('category', 'UNKNOWN'),       # Kolumna G - kategoria
-            '',                                    # Kolumna H - pusta
-            data.get('amount', 'UNKNOWN')          # Kolumna I - kwota
+            '',                                      # Kolumna A - pusta
+            clean_value(data.get('date', '')),       # Kolumna B - data
+            clean_value(data.get('supplier', '')),   # Kolumna C - dostawca
+            clean_value(data.get('bill_number', '')),# Kolumna D - numer paragonu
+            clean_value(data.get('payment', '')),    # Kolumna E - płatność
+            clean_value(data.get('expense_item', '')), # Kolumna F - expense item
+            clean_value(data.get('category', '')),   # Kolumna G - kategoria
+            '',                                      # Kolumna H - pusta
+            clean_value(data.get('amount', ''))      # Kolumna I - kwota
         ]
         
         logging.info(f"   Próba zapisu wiersza: {row}")
-        sheet.append_row(row)
+        result = sheet.append_row(row)
         logging.info(f"✅ Zapisano do Google Sheets")
         return True
         
     except Exception as e:
         logging.error(f"❌ Błąd zapisu: {str(e)}")
+        logging.error(f"   Typ błędu: {type(e).__name__}")
         return False
 
 # ==================== GŁÓWNA LOGIKA BOTA ====================
@@ -482,7 +490,12 @@ def handle_update(update):
                             # Szukanie daty (używa poprawionej format_date z Unity)
                             date_match = re.search(r'(\d{2}[./-]\d{2}[./-]\d{4}|\d{2}[./-]\d{2}[./-]\d{2}|\d{4}-\d{2}-\d{2})', full_text)
                             if date_match:
-                                date = format_date(date_match.group(1))
+                                raw_date = date_match.group(1).strip()
+                                # Usuń wszystkie niepotrzebne znaki (pozostaw tylko cyfry i ukośniki)
+                                raw_date = re.sub(r'[^0-9/]', '', raw_date)
+                                date = format_date(raw_date)
+                            else:
+                                date = "UNKNOWN"
                             
                             # Szukanie kwoty
                             amount_matches = re.findall(r'(\d+[.,]\d{2})\s*(?:aed|total|suma|kwota|amount)', full_text.lower())
