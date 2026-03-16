@@ -10,9 +10,14 @@ import logging
 import base64
 from datetime import datetime
 
-# ==================== KONFIGURACJA ====================
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# ==================== KONFIGURACJA LOGOWANIA ====================
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    force=True
+)
 
+# ==================== KONFIGURACJA ====================
 BOT_TOKEN = "8746910864:AAFiSK85KM_6OGsDHxEIGBm2xWkxIXWfMDc"
 PADDLE_TOKEN = "e4ade03b3e21505f809528f4f3c74eb31097c93a"
 PADDLE_URL = "https://i8w753gcm0e7e7y0.aistudio-app.com/layout-parsing"
@@ -20,81 +25,8 @@ API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}/"
 
 # ==================== GOOGLE SHEETS ====================
 SHEET_ID = "1SHUyo_5sJYsQPiIIR9nCkAeJI2ZB5KQFx-1g0jXKaRw"
-SHEET_NAME = "Аркуш1"  # Sprawdź nazwę swojego arkusza na dole tabeli!
+SHEET_NAME = "Аркуш1"  # !!! ZMIEŃ NA SWOJĄ NAZWĘ ARKUSZA (sprawdź na dole tabeli) !!!
 
-def get_google_sheet():
-    """Połączenie z Google Sheets z pełnym logowaniem"""
-    logging.info("=== PRÓBA POŁĄCZENIA Z GOOGLE SHEETS ===")
-    
-    # Sprawdź różne możliwe ścieżki do pliku
-    possible_paths = [
-        '/etc/secrets/google-credentials.json',  # Render Secret File
-        'google-credentials.json',                # Lokalnie
-        os.path.join(os.getcwd(), 'google-credentials.json')  # Bieżący katalog
-    ]
-    
-    creds_path = None
-    for path in possible_paths:
-        if os.path.exists(path):
-            creds_path = path
-            logging.info(f"✅ Znaleziono plik credentials: {path}")
-            logging.info(f"   Rozmiar pliku: {os.path.getsize(path)} bajtów")
-            break
-    
-    if not creds_path:
-        logging.error("❌ NIE ZNALEZIONO pliku credentials w żadnej lokalizacji!")
-        logging.error(f"Sprawdzone ścieżki: {possible_paths}")
-        return None
-
-    try:
-        scope = ["https://www.googleapis.com/auth/spreadsheets"]
-        creds = Credentials.from_service_account_file(creds_path, scopes=scope)
-        logging.info("✅ Credentials wczytane pomyślnie")
-        
-        client = gspread.authorize(creds)
-        logging.info("✅ Autoryzacja gspread OK")
-        
-        sheet = client.open_by_key(SHEET_ID)
-        logging.info(f"✅ Tabela otwarta, tytuł: {sheet.title}")
-        
-        worksheet = sheet.worksheet(SHEET_NAME)
-        logging.info(f"✅ Arkusz otwarty, liczba wierszy: {len(worksheet.get_all_values())}")
-        
-        return worksheet
-        
-    except Exception as e:
-        logging.error(f"❌ BŁĄD połączenia: {str(e)}")
-        logging.error(f"   Typ błędu: {type(e).__name__}")
-        return None
-
-def save_to_sheet(data):
-    """Zapis danych do Google Sheets z logowaniem"""
-    logging.info("=== PRÓBA ZAPISU DO GOOGLE SHEETS ===")
-    
-    try:
-        sheet = get_google_sheet()
-        if not sheet:
-            logging.error("❌ Nie można uzyskać dostępu do arkusza")
-            return False
-        
-        row = [
-            data.get('date', ''),
-            data.get('supplier', ''),
-            data.get('bill_number', ''),
-            data.get('payment', ''),
-            data.get('expense_item', ''),
-            data.get('category', ''),
-            data.get('amount', '')
-        ]
-        
-        logging.info(f"   Próba zapisu wiersza: {row}")
-        sheet.append_row(row)
-        logging.info(f"✅ Zapisano do Google Sheets")
-        return True
-        
-    except Exception as e:
-        logging.error(f"❌ Błąd zapisu do Google Sheets: {str(e)}")
-        return False
 # ==================== SŁOWNIKI (z Twojego kodu Unity) ====================
 known_suppliers = {
     # Supermarkety i sklepy spożywcze
@@ -163,6 +95,7 @@ known_suppliers = {
 }
 
 supplier_categories = {
+    # ingredients
     "carrefour": "ingredients",
     "m mart": "ingredients",
     "al aswaq": "ingredients",
@@ -194,25 +127,30 @@ supplier_categories = {
     "eat well": "ingredients",
     "demchenko": "ingredients",
     
+    # packaging
     "hotpack": "packaging",
     "falconpack": "packaging",
     "falcon": "packaging",
     "fallonpack": "packaging",
     
+    # fuel stations
     "adnoc": "fuel",
     "enoc": "fuel",
     "emarat": "fuel",
     "brothers gas": "gas",
     "eppco": "fuel",
     
+    # salary
     "al ansari": "salary",
     "ansari": "salary",
     
+    # maintenance
     "sudhi": "maintenance",
     "al ershad": "maintenance",
     "al mumtaz": "maintenance",
     "fahen": "maintenance",
     
+    # others
     "foodics": "others",
     "drc": "others",
     "value bag": "others",
@@ -231,36 +169,39 @@ def send_message(chat_id, text):
         logging.error(f"send_message error: {e}")
 
 def format_date(raw_date):
-    """Formatowanie daty z paragonu"""
+    """Formatowanie daty z paragonu (z kodu Unity)"""
     raw_date = raw_date.strip()
     
-    # Sprawdź czy to format DD/MM/YYYY lub podobny
-    match = re.search(r'(\d{2})[./-](\d{2})[./-](\d{4})', raw_date)
-    if match:
-        return f"{match.group(1)}/{match.group(2)}"
+    # Popraw błędne formaty (np. 19/20 na 19/02)
+    if raw_date.contains("/20") and len(raw_date) == 5:
+        return raw_date.replace("/20", "/02")
+    if raw_date.contains("/19") and len(raw_date) == 5:
+        return raw_date.replace("/19", "/01")
     
-    match = re.search(r'(\d{2})[./-](\d{2})[./-](\d{2})', raw_date)
-    if match:
-        return f"{match.group(1)}/{match.group(2)}"
+    match = re.search(r'(\d{4})-(\d{2})-(\d{2})|(\d{2})[\.\/-](\d{2})[\.\/-](\d{4})|(\d{2})[\.\/-](\d{2})', raw_date)
     
+    if match:
+        if match.group(1):
+            return f"{match.group(3)}/{match.group(2)}"
+        elif match.group(4):
+            return f"{match.group(4)}/{match.group(5)}"
+        elif match.group(7):
+            return f"{match.group(7)}/{match.group(8)}"
     return "UNKNOWN"
 
-def normalize_payment(raw_payment):
-    """Normalizacja metody płatności"""
-    raw = raw_payment.lower()
-    if any(x in raw for x in ['card', 'karta', 'credit', 'debit', 'visa', 'master']):
+def normalize_payment(raw):
+    """Normalizacja metody płatności (z kodu Unity)"""
+    raw = raw.lower()
+    if any(x in raw for x in ['card', 'karta', 'credit', 'debit', 'visa', 'master', 'carta', 'carte']):
         return "card"
     elif any(x in raw for x in ['cash', 'gotowka', 'gotówka', 'kontant']):
         return "cash"
     return "UNKNOWN"
 
 def clean_amount(raw_amount):
-    """Czyszczenie kwoty"""
-    # Usuń wszystko poza cyframi, kropkami i przecinkami
+    """Czyszczenie kwoty (z kodu Unity)"""
     cleaned = re.sub(r'[^\d.,]', '', raw_amount)
-    # Zamień kropkę na przecinek
     cleaned = cleaned.replace('.', ',')
-    # Jeśli są dwa przecinki, coś jest nie tak
     if cleaned.count(',') > 1:
         cleaned = cleaned.replace(',', '')
         if len(cleaned) > 2:
@@ -268,7 +209,7 @@ def clean_amount(raw_amount):
     return cleaned
 
 def find_supplier(text):
-    """Znajdź dostawcę w tekście"""
+    """Znajdź dostawcę w tekście (z kodu Unity)"""
     text_lower = text.lower()
     for key, value in known_suppliers.items():
         if key in text_lower:
@@ -276,7 +217,7 @@ def find_supplier(text):
     return "UNKNOWN"
 
 def classify_receipt(supplier, amount_str, products=""):
-    """Klasyfikacja paragonu (expense item i category)"""
+    """Klasyfikacja paragonu (dokładna kopia z Unity)"""
     supplier_lower = supplier.lower()
     
     # Al Ansari Exchange - salary
@@ -325,8 +266,7 @@ def classify_receipt(supplier, amount_str, products=""):
     return "ingredients", "ingredients"
 
 def extract_bill_number(text):
-    """Wyodrębnij numer paragonu z tekstu"""
-    # Szukaj numeru po słowach Order, Bill, Invoice, #
+    """Wyodrębnij numer paragonu"""
     patterns = [
         r'order[:\s]*([a-zA-Z0-9\-_]+)',
         r'bill[:\s]*([a-zA-Z0-9\-_]+)',
@@ -334,45 +274,114 @@ def extract_bill_number(text):
         r'no[.:\s]*([a-zA-Z0-9\-_]+)',
         r'#\s*([a-zA-Z0-9\-_]+)'
     ]
-    
     for pattern in patterns:
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
             return match.group(1)
     return "UNKNOWN"
 
-# ==================== GŁÓWNA LOGIKA ====================
+# ==================== FUNKCJE GOOGLE SHEETS ====================
+def get_google_sheet():
+    """Połączenie z Google Sheets z pełnym logowaniem"""
+    logging.info("=== PRÓBA POŁĄCZENIA Z GOOGLE SHEETS ===")
+    
+    possible_paths = [
+        '/etc/secrets/google-credentials.json',
+        'google-credentials.json',
+        os.path.join(os.getcwd(), 'google-credentials.json')
+    ]
+    
+    creds_path = None
+    for path in possible_paths:
+        if os.path.exists(path):
+            creds_path = path
+            logging.info(f"✅ Znaleziono plik credentials: {path}")
+            logging.info(f"   Rozmiar pliku: {os.path.getsize(path)} bajtów")
+            break
+    
+    if not creds_path:
+        logging.error("❌ NIE ZNALEZIONO pliku credentials!")
+        return None
+
+    try:
+        scope = ["https://www.googleapis.com/auth/spreadsheets"]
+        creds = Credentials.from_service_account_file(creds_path, scopes=scope)
+        logging.info("✅ Credentials wczytane pomyślnie")
+        
+        client = gspread.authorize(creds)
+        logging.info("✅ Autoryzacja gspread OK")
+        
+        sheet = client.open_by_key(SHEET_ID)
+        logging.info(f"✅ Tabela otwarta, tytuł: {sheet.title}")
+        
+        worksheet = sheet.worksheet(SHEET_NAME)
+        logging.info(f"✅ Arkusz otwarty, nazwa: {SHEET_NAME}")
+        return worksheet
+        
+    except Exception as e:
+        logging.error(f"❌ BŁĄD połączenia: {str(e)}")
+        logging.error(f"   Typ błędu: {type(e).__name__}")
+        return None
+
+def save_to_sheet(data):
+    """Zapis danych do Google Sheets (dokładnie tak, jak w Twojej tabeli)"""
+    logging.info("=== PRÓBA ZAPISU DO GOOGLE SHEETS ===")
+    
+    try:
+        sheet = get_google_sheet()
+        if not sheet:
+            logging.error("❌ Nie można uzyskać dostępu do arkusza")
+            return False
+        
+        # KOLEJNOŚĆ KOLUMN w Twojej tabeli:
+        # B: data | C: dostawca | D: numer paragonu | E: płatność | F: expense item | G: kategoria | H: puste | I: kwota
+        row = [
+            data.get('date', ''),           # Kolumna B
+            data.get('supplier', ''),        # Kolumna C
+            data.get('bill_number', ''),     # Kolumna D
+            data.get('payment', ''),         # Kolumna E
+            data.get('expense_item', ''),    # Kolumna F
+            data.get('category', ''),        # Kolumna G
+            '',                               # Kolumna H (pusta)
+            data.get('amount', '')            # Kolumna I
+        ]
+        
+        logging.info(f"   Próba zapisu wiersza: {row}")
+        sheet.append_row(row)
+        logging.info(f"✅ Zapisano do Google Sheets")
+        return True
+        
+    except Exception as e:
+        logging.error(f"❌ Błąd zapisu: {str(e)}")
+        return False
+
+# ==================== GŁÓWNA LOGIKA BOTA ====================
 def handle_start(chat_id):
     welcome_text = """
-🤖 <b>Receipt Scanner Bot v2.0</b>
+🤖 <b>Receipt Scanner Bot v3.0</b>
 
 📸 <b>Co potrafię:</b>
 • Rozpoznaję tekst z paragonów
-• Automatycznie klasyfikuję dostawców
+• Klasyfikuję dostawców (jak w twoim kodzie Unity)
 • Rozróżniam metody płatności
-• Zapisuję dane do Google Sheets
+• Zapisuję dane do Google Sheets (dokładnie w twoich kolumnach)
 
 📋 <b>Jak używać:</b>
 1. Wyślij mi zdjęcie paragonu
 2. AI przeanalizuje obraz
 3. Otrzymasz podsumowanie
 4. Dane trafią do tabeli
-
-⚡️ <i>Pełna automatyzacja księgowości!</i>
 """
     send_message(chat_id, welcome_text)
 
 def handle_update(update):
     logging.info("=== NOWA WIADOMOŚĆ ===")
     
-    # Obsługa komendy /start
     if 'message' in update and 'text' in update['message']:
         if update['message']['text'] == '/start':
-            chat_id = update['message']['chat']['id']
-            handle_start(chat_id)
+            handle_start(update['message']['chat']['id'])
             return
     
-    # Sprawdzenie czy to zdjęcie
     if 'message' not in update or 'photo' not in update['message']:
         return
 
@@ -380,7 +389,6 @@ def handle_update(update):
     send_message(chat_id, "🔍 <b>Analizuję paragon...</b>")
 
     try:
-        # Pobranie i zapis zdjęcia
         file_id = update['message']['photo'][-1]['file_id']
         file_info = requests.get(API_URL + f"getFile?file_id={file_id}", timeout=10).json()
         file_path = file_info['result']['file_path']
@@ -391,16 +399,10 @@ def handle_update(update):
             f.write(img_data)
         logging.info(f"📸 Pobrano zdjęcie: {len(img_data)} bajtów")
 
-        # Kodowanie do base64
         with open("receipt.jpg", "rb") as f:
             file_data = base64.b64encode(f.read()).decode("utf-8")
 
-        # Wysłanie do PaddleOCR
-        headers = {
-            "Authorization": f"token {PADDLE_TOKEN}",
-            "Content-Type": "application/json"
-        }
-        
+        headers = {"Authorization": f"token {PADDLE_TOKEN}", "Content-Type": "application/json"}
         payload = {
             "file": file_data,
             "fileType": 1,
@@ -419,7 +421,6 @@ def handle_update(update):
                     result = r.json()
                     
                     if result.get("errorCode") == 0:
-                        # Zbieranie TEKSTU z odpowiedzi
                         all_text = []
                         products_text = []
                         
@@ -430,7 +431,6 @@ def handle_update(update):
                                         if block.get("block_label") == "text" and block.get("block_content"):
                                             content = block["block_content"]
                                             all_text.append(content)
-                                            # Zbieranie produktów (linie z cyframi)
                                             if re.search(r'\d+[.,]\d+', content):
                                                 products_text.append(content)
                         
@@ -438,42 +438,34 @@ def handle_update(update):
                             full_text = "\n".join(all_text)
                             products_text_full = "\n".join(products_text)
                             
-                            # ===== WYODRĘBNIANIE DANYCH =====
                             supplier = find_supplier(full_text)
                             date = "UNKNOWN"
                             amount = "UNKNOWN"
                             payment = "UNKNOWN"
                             
-                            # Szukanie daty
                             date_match = re.search(r'(\d{2}[./-]\d{2}[./-]\d{4}|\d{2}[./-]\d{2}[./-]\d{2})', full_text)
                             if date_match:
                                 date = format_date(date_match.group(1))
                             
-                            # Szukanie kwoty
                             amount_matches = re.findall(r'(\d+[.,]\d{2})\s*(?:aed|total|suma|kwota|amount)', full_text.lower())
                             if amount_matches:
-                                amount = clean_amount(amount_matches[-1])  # Ostatnia kwota to zwykle całkowita
+                                amount = clean_amount(amount_matches[-1])
                             else:
-                                # Szukaj samych liczb
                                 all_amounts = re.findall(r'(\d+[.,]\d{2})', full_text)
                                 if all_amounts:
                                     amount = clean_amount(all_amounts[-1])
                             
-                            # Szukanie płatności
                             if re.search(r'card|credit|debit|visa|master', full_text, re.IGNORECASE):
                                 payment = "card"
                             elif re.search(r'cash|kontant', full_text, re.IGNORECASE):
                                 payment = "cash"
                             
-                            # Numer paragonu
                             bill_number = extract_bill_number(full_text)
                             if bill_number == "UNKNOWN":
                                 bill_number = os.path.splitext(os.path.basename(file_path))[0]
                             
-                            # Klasyfikacja
                             expense_item, category = classify_receipt(supplier, amount, products_text_full)
                             
-                            # ===== PRZYGOTOWANIE DANYCH =====
                             receipt_data = {
                                 'supplier': supplier,
                                 'date': date,
@@ -481,14 +473,11 @@ def handle_update(update):
                                 'payment': payment,
                                 'bill_number': bill_number,
                                 'expense_item': expense_item,
-                                'category': category,
-                                'raw_text': full_text[:500]  # do debugu
+                                'category': category
                             }
                             
-                            # ===== ZAPIS DO GOOGLE SHEETS =====
                             saved = save_to_sheet(receipt_data)
                             
-                            # ===== ODPOWIEDŹ DLA UŻYTKOWNIKA =====
                             response = f"✅ <b>Paragon rozpoznany!</b>\n\n"
                             response += f"🏪 <b>Dostawca:</b> {supplier}\n"
                             response += f"📅 <b>Data:</b> {date}\n"
@@ -504,10 +493,7 @@ def handle_update(update):
                                 response += "⚠️ <b>Nie udało się zapisać do Sheets</b>"
                             
                             send_message(chat_id, response)
-                            
-                            # Logowanie
                             logging.info(f"✅ Rozpoznano: {supplier}, {date}, {amount}")
-                            
                         else:
                             send_message(chat_id, "😕 Nie znaleziono tekstu na paragonie")
                     else:
