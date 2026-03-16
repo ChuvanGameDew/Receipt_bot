@@ -483,33 +483,93 @@ def handle_update(update):
                             
                             # ===== WYODRĘBNIANIE DANYCH =====
                             supplier = find_supplier(full_text)
+                            
+                            # ===== LEPSZE SZUKANIE DATY =====
                             date = "UNKNOWN"
+                            
+                            # Szukaj różnych formatów daty
+                            date_patterns = [
+                                r'(\d{2})[./-](\d{2})[./-](\d{4})',  # DD/MM/YYYY
+                                r'(\d{4})[./-](\d{2})[./-](\d{2})',  # YYYY-MM-DD
+                                r'(\d{2})[./-](\d{2})[./-](\d{2})',  # DD/MM/YY
+                                r'(\d{1,2})\s+(\w{3,9})\s+(\d{4})',   # 15 January 2024
+                                r'(\d{2})\s+(\w{3})',                 # 15 Jan
+                            ]
+                            
+                            for pattern in date_patterns:
+                                match = re.search(pattern, full_text, re.IGNORECASE)
+                                if match:
+                                    if len(match.groups()) == 3:
+                                        # DD/MM/YYYY lub YYYY-MM-DD
+                                        if len(match.group(1)) == 4:  # YYYY-MM-DD
+                                            clean_date = f"{match.group(3).zfill(2)}/{match.group(2).zfill(2)}"
+                                        else:  # DD/MM/YYYY lub DD/MM/YY
+                                            clean_date = f"{match.group(1).zfill(2)}/{match.group(2).zfill(2)}"
+                                        date = clean_date
+                                        break
+                                    elif len(match.groups()) == 2:
+                                        # DD MMM
+                                        months = {"jan": "01", "feb": "02", "mar": "03", "apr": "04",
+                                                  "may": "05", "jun": "06", "jul": "07", "aug": "08",
+                                                  "sep": "09", "oct": "10", "nov": "11", "dec": "12"}
+                                        month_text = match.group(2).lower()[:3]
+                                        if month_text in months:
+                                            date = f"{match.group(1).zfill(2)}/{months[month_text]}"
+                                            break
+                            
+                            # ===== LEPSZE SZUKANIE KWOTY =====
                             amount = "UNKNOWN"
+                            
+                            # Najpierw szukaj TOTAL, SUMA, KWOTA
+                            total_keywords = ['total', 'suma', 'kwota', 'amount', 'razem', 'do zapłaty', 'do zaplaty']
+                            
+                            # Szukaj wersów z keywords
+                            for line in all_text:
+                                line_lower = line.lower()
+                                if any(keyword in line_lower for keyword in total_keywords):
+                                    numbers = re.findall(r'(\d+[.,]\d{2})', line)
+                                    if numbers:
+                                        # Znajdź największą liczbę (często to całkowita kwota)
+                                        numeric_values = []
+                                        for num in numbers:
+                                            try:
+                                                val = float(num.replace(',', '.'))
+                                                numeric_values.append((val, num))
+                                            except:
+                                                pass
+                                        if numeric_values:
+                                            # Wybierz największą wartość
+                                            numeric_values.sort(reverse=True)
+                                            amount = clean_amount(numeric_values[0][1])
+                                            break
+                            
+                            # Jeśli nie znaleziono, szukaj wszystkich liczb i wybierz największą
+                            if amount == "UNKNOWN":
+                                all_numbers = []
+                                for line in all_text:
+                                    numbers = re.findall(r'(\d+[.,]\d{2})', line)
+                                    for num in numbers:
+                                        try:
+                                            val = float(num.replace(',', '.'))
+                                            all_numbers.append((val, num))
+                                        except:
+                                            pass
+                                
+                                if all_numbers:
+                                    # Wybierz największą wartość
+                                    all_numbers.sort(reverse=True)
+                                    amount = clean_amount(all_numbers[0][1])
+                            
+                            # ===== SZUKANIE PŁATNOŚCI =====
                             payment = "UNKNOWN"
+                            payment_text = ' '.join(all_text).lower()
                             
-                            # Szukanie daty (używa poprawionej format_date z Unity)
-                            date_match = re.search(r'(\d{2}[./-]\d{2}[./-]\d{4}|\d{2}[./-]\d{2}[./-]\d{2}|\d{4}-\d{2}-\d{2})', full_text)
-                            if date_match:
-                                raw_date = date_match.group(1).strip()
-                                # Usuń wszystkie niepotrzebne znaki (pozostaw tylko cyfry i ukośniki)
-                                raw_date = re.sub(r'[^0-9/]', '', raw_date)
-                                date = format_date(raw_date)
-                            else:
-                                date = "UNKNOWN"
+                            card_keywords = ['card', 'credit', 'debit', 'visa', 'mastercard', 'karta']
+                            cash_keywords = ['cash', 'gotówka', 'gotowka', 'kontant']
                             
-                            # Szukanie kwoty
-                            amount_matches = re.findall(r'(\d+[.,]\d{2})\s*(?:aed|total|suma|kwota|amount)', full_text.lower())
-                            if amount_matches:
-                                amount = clean_amount(amount_matches[-1])
-                            else:
-                                all_amounts = re.findall(r'(\d+[.,]\d{2})', full_text)
-                                if all_amounts:
-                                    amount = clean_amount(all_amounts[-1])
-                            
-                            # Szukanie płatności
-                            if re.search(r'card|credit|debit|visa|master', full_text, re.IGNORECASE):
+                            if any(kw in payment_text for kw in card_keywords):
                                 payment = "card"
-                            elif re.search(r'cash|kontant', full_text, re.IGNORECASE):
+                            elif any(kw in payment_text for kw in cash_keywords):
                                 payment = "cash"
                             
                             # 🔥 NUMER PARAGONU = NAZWA PLIKU (bez rozszerzenia)
