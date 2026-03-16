@@ -23,32 +23,60 @@ SHEET_ID = "1SHUyo_5sJYsQPiIIR9nCkAeJI2ZB5KQFx-1g0jXKaRw"
 SHEET_NAME = "Аркуш1"  # Sprawdź nazwę swojego arkusza na dole tabeli!
 
 def get_google_sheet():
-    """Połączenie z Google Sheets"""
+    """Połączenie z Google Sheets z pełnym logowaniem"""
+    logging.info("=== PRÓBA POŁĄCZENIA Z GOOGLE SHEETS ===")
+    
+    # Sprawdź różne możliwe ścieżki do pliku
+    possible_paths = [
+        '/etc/secrets/google-credentials.json',  # Render Secret File
+        'google-credentials.json',                # Lokalnie
+        os.path.join(os.getcwd(), 'google-credentials.json')  # Bieżący katalog
+    ]
+    
+    creds_path = None
+    for path in possible_paths:
+        if os.path.exists(path):
+            creds_path = path
+            logging.info(f"✅ Znaleziono plik credentials: {path}")
+            logging.info(f"   Rozmiar pliku: {os.path.getsize(path)} bajtów")
+            break
+    
+    if not creds_path:
+        logging.error("❌ NIE ZNALEZIONO pliku credentials w żadnej lokalizacji!")
+        logging.error(f"Sprawdzone ścieżki: {possible_paths}")
+        return None
+
     try:
-        # Na Renderze plik będzie dostępny pod tą ścieżką
-        creds_path = '/etc/secrets/google-credentials.json'
-        if not os.path.exists(creds_path):
-            # Lokalnie dla testów
-            creds_path = 'google-credentials.json'
-            
-        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        scope = ["https://www.googleapis.com/auth/spreadsheets"]
         creds = Credentials.from_service_account_file(creds_path, scopes=scope)
+        logging.info("✅ Credentials wczytane pomyślnie")
+        
         client = gspread.authorize(creds)
-        sheet = client.open_by_key(SHEET_ID).worksheet(SHEET_NAME)
-        logging.info("✅ Połączono z Google Sheets")
-        return sheet
+        logging.info("✅ Autoryzacja gspread OK")
+        
+        sheet = client.open_by_key(SHEET_ID)
+        logging.info(f"✅ Tabela otwarta, tytuł: {sheet.title}")
+        
+        worksheet = sheet.worksheet(SHEET_NAME)
+        logging.info(f"✅ Arkusz otwarty, liczba wierszy: {len(worksheet.get_all_values())}")
+        
+        return worksheet
+        
     except Exception as e:
-        logging.error(f"❌ Błąd połączenia z Google Sheets: {e}")
+        logging.error(f"❌ BŁĄD połączenia: {str(e)}")
+        logging.error(f"   Typ błędu: {type(e).__name__}")
         return None
 
 def save_to_sheet(data):
-    """Zapis danych do Google Sheets"""
+    """Zapis danych do Google Sheets z logowaniem"""
+    logging.info("=== PRÓBA ZAPISU DO GOOGLE SHEETS ===")
+    
     try:
         sheet = get_google_sheet()
         if not sheet:
+            logging.error("❌ Nie można uzyskać dostępu do arkusza")
             return False
         
-        # Format danych: [Data, Dostawca, Numer, Płatność, Expense Item, Kategoria, Kwota]
         row = [
             data.get('date', ''),
             data.get('supplier', ''),
@@ -59,13 +87,14 @@ def save_to_sheet(data):
             data.get('amount', '')
         ]
         
+        logging.info(f"   Próba zapisu wiersza: {row}")
         sheet.append_row(row)
-        logging.info(f"✅ Zapisano do Google Sheets: {row}")
+        logging.info(f"✅ Zapisano do Google Sheets")
         return True
+        
     except Exception as e:
-        logging.error(f"❌ Błąd zapisu do Google Sheets: {e}")
+        logging.error(f"❌ Błąd zapisu do Google Sheets: {str(e)}")
         return False
-
 # ==================== SŁOWNIKI (z Twojego kodu Unity) ====================
 known_suppliers = {
     # Supermarkety i sklepy spożywcze
