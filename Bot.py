@@ -169,14 +169,25 @@ def send_message(chat_id, text):
         logging.error(f"send_message error: {e}")
 
 def format_date(raw_date):
-    """Formatowanie daty z paragonu (z kodu Unity)"""
+    """Formatowanie daty z paragonu (z kodu Unity, poprawione)"""
     raw_date = raw_date.strip()
     
     # Popraw błędne formaty (np. 19/20 na 19/02)
-    if raw_date.contains("/20") and len(raw_date) == 5:
+    if "/20" in raw_date and len(raw_date) == 5:
         return raw_date.replace("/20", "/02")
-    if raw_date.contains("/19") and len(raw_date) == 5:
+    if "/19" in raw_date and len(raw_date) == 5:
         return raw_date.replace("/19", "/01")
+    
+    match = re.search(r'(\d{4})-(\d{2})-(\d{2})|(\d{2})[\.\/-](\d{2})[\.\/-](\d{4})|(\d{2})[\.\/-](\d{2})', raw_date)
+    
+    if match:
+        if match.group(1):
+            return f"{match.group(3)}/{match.group(2)}"
+        elif match.group(4):
+            return f"{match.group(4)}/{match.group(5)}"
+        elif match.group(7):
+            return f"{match.group(7)}/{match.group(8)}"
+    return "UNKNOWN"
     
     match = re.search(r'(\d{4})-(\d{2})-(\d{2})|(\d{2})[\.\/-](\d{2})[\.\/-](\d{4})|(\d{2})[\.\/-](\d{2})', raw_date)
     
