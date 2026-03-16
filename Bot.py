@@ -65,28 +65,15 @@ def handle_update(update):
         for attempt in range(max_retries):
             try:
                 logging.info(f"Attempt {attempt + 1}/{max_retries} to PaddleOCR...")
-                r = requests.post(PADDLE_URL, json=payload, headers=headers, timeout=60)  # Увеличил таймаут до 60 секунд
+                r = requests.post(PADDLE_URL, json=payload, headers=headers, timeout=60)
                 
                 if r.status_code == 200:
                     logging.info(f"PaddleOCR success on attempt {attempt + 1}")
                     result = r.json()
                     
-                    if result.get("errorCode") == 0:
-                        text = ""
-                        if "result" in result and "layoutParsingResults" in result["result"]:
-                            results = result["result"]["layoutParsingResults"]
-                            if results and len(results) > 0:
-                                if "prunedResult" in results[0]:
-                                    text = results[0]["prunedResult"].get("text", "")
-                                elif "markdown" in results[0]:
-                                    text = results[0]["markdown"].get("text", "")
-                        
-                        if text:
-                            send_message(chat_id, f"✅ {text[:4000]}")
-                        else:
-                            send_message(chat_id, "❌ Текст не найден")
-                    else:
-                        send_message(chat_id, f"❌ Ошибка PaddleOCR: {result.get('errorMsg')}")
+                    # ⚡⚡⚡ ВРЕМЕННО: отправляем весь ответ ⚡⚡⚡
+                    pretty_response = json.dumps(result, indent=2, ensure_ascii=False)
+                    send_message(chat_id, f"📦 Ответ PaddleOCR (первые 3500 символов):\n{pretty_response[:3500]}")
                     break
                     
                 elif r.status_code == 500 and attempt < max_retries - 1:
