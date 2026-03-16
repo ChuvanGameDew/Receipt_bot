@@ -22,14 +22,42 @@ def send_message(chat_id, text):
     except Exception as e:
         logging.error(f"send_message error: {e}")
 
+def handle_start(chat_id):
+    """Красивое приветствие"""
+    welcome_text = """
+🤖 <b>Receipt Scanner Bot</b>
+
+Привет! Я бот для распознавания чеков. 
+Просто отправь мне фото чека, и я извлеку из него текст.
+
+📸 <b>Как пользоваться:</b>
+1. Нажми на скрепку 📎
+2. Выбери фото чека
+3. Отправь мне
+4. Получи результат
+
+⚡️ <i>Работает 24/7 на сервере</i>
+"""
+    send_message(chat_id, welcome_text)
+
 def handle_update(update):
     logging.info("=== НОВОЕ ОБНОВЛЕНИЕ ===")
     
+    # Обработка команды /start
+    if 'message' in update and 'text' in update['message']:
+        if update['message']['text'] == '/start':
+            chat_id = update['message']['chat']['id']
+            handle_start(chat_id)
+            return
+    
+    # Проверка на фото
     if 'message' not in update or 'photo' not in update['message']:
+        chat_id = update['message']['chat']['id']
+        send_message(chat_id, "❌ Пожалуйста, отправь фото чека.")
         return
 
     chat_id = update['message']['chat']['id']
-    send_message(chat_id, "📸 Обрабатываю...")
+    send_message(chat_id, "🔍 Обрабатываю фото...")
 
     try:
         # Получаем file_id и скачиваем фото
@@ -47,7 +75,7 @@ def handle_update(update):
         with open("receipt.jpg", "rb") as f:
             file_data = base64.b64encode(f.read()).decode("utf-8")
 
-        # Отправляем в PaddleOCR с повторными попытками
+        # Отправляем в PaddleOCR
         headers = {
             "Authorization": f"token {PADDLE_TOKEN}",
             "Content-Type": "application/json"
@@ -68,37 +96,49 @@ def handle_update(update):
                 r = requests.post(PADDLE_URL, json=payload, headers=headers, timeout=60)
                 
                 if r.status_code == 200:
-                    logging.info(f"PaddleOCR success on attempt {attempt + 1}")
                     result = r.json()
                     
-                    # ⚡⚡⚡ ВРЕМЕННО: отправляем весь ответ ⚡⚡⚡
-                    pretty_response = json.dumps(result, indent=2, ensure_ascii=False)
-                    send_message(chat_id, f"📦 Ответ PaddleOCR (первые 3500 символов):\n{pretty_response[:3500]}")
+                    if result.get("errorCode") == 0:
+                        # Собираем ТОЛЬКО текст из блоков
+                        text_parts = []
+                        if "result" in result and "layoutParsingResults" in result["result"]:
+                            for res in result["result"]["layoutParsingResults"]:
+                                if "prunedResult" in res and "parsing_res_list" in res["prunedResult"]:
+                                    for block in res["prunedResult"]["parsing_res_list"]:
+                                        if block.get("block_label") == "text" and block.get("block_content"):
+                                            text_parts.append(block["block_content"])
+                        
+                        if text_parts:
+                            # Объединяем текст с переносами строк
+                            full_text = "\n".join(text_parts)
+                            send_message(chat_id, f"📄 <b>Текст с чека:</b>\n\n{full_text}")
+                        else:
+                            send_message(chat_id, "😕 Не удалось найти текст на фото")
+                    else:
+                        send_message(chat_id, f"⚠️ Ошибка распознавания: {result.get('errorMsg')}")
                     break
                     
                 elif r.status_code == 500 and attempt < max_retries - 1:
-                    logging.info(f"Got 500, waiting 3 seconds before retry...")
                     time.sleep(3)
                     continue
                 else:
-                    send_message(chat_id, f"❌ Ошибка HTTP: {r.status_code}")
+                    send_message(chat_id, f"⚠️ Ошибка сервера: {r.status_code}")
                     break
                     
             except requests.exceptions.Timeout:
                 if attempt < max_retries - 1:
-                    logging.info(f"Timeout on attempt {attempt + 1}, waiting 5 seconds before retry...")
                     time.sleep(5)
                     continue
                 else:
-                    send_message(chat_id, "❌ Таймаут после 3 попыток. Сервер PaddleOCR не отвечает.")
+                    send_message(chat_id, "⏱ Таймаут. Попробуй позже.")
             except Exception as e:
-                logging.exception(f"Exception on attempt {attempt + 1}: {e}")
+                logging.exception(f"Exception: {e}")
                 if attempt == max_retries - 1:
-                    send_message(chat_id, f"❌ Ошибка: {str(e)[:100]}")
+                    send_message(chat_id, f"⚠️ Ошибка: {str(e)[:100]}")
 
     except Exception as e:
         logging.exception(f"ERROR: {e}")
-        send_message(chat_id, f"❌ Ошибка: {str(e)[:100]}")
+        send_message(chat_id, f"⚠️ Ошибка: {str(e)[:100]}")
     finally:
         if os.path.exists("receipt.jpg"):
             os.remove("receipt.jpg")
@@ -121,12 +161,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b"Bot is running")
-        logging.info("GET request handled")
 
 def main():
     port = int(os.environ.get('PORT', 10000))
     server = HTTPServer(("0.0.0.0", port), Handler)
-    logging.info(f"Starting bot on port {port}")
+    logging.info(f"🚀 Bot started on port {port}")
     server.serve_forever()
 
 if __name__ == "__main__":
