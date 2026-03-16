@@ -1,4 +1,4 @@
-﻿import requests
+import requests
 import os
 import time
 from aiogram import Bot, Dispatcher, types
@@ -33,15 +33,20 @@ async def photo(message: types.Message):
         files = {"file": ("receipt.jpg", f, "image/jpeg")}
         headers = {"Authorization": f"Bearer {OCR_KEY}"}
         
+        print("Отправляю запрос в ocrbase...")
         r = requests.post(
             "https://api.ocrbase.dev/v1/parse",
             headers=headers,
             files=files,
             timeout=30
         )
+        
+    print(f"Статус ответа: {r.status_code}")
+    print(f"Ответ ocrbase: {r.text}")
 
     if r.status_code == 200:
         data = r.json()
+        print(f"JSON ответ: {data}")
         job_id = data.get('id')
         
         if not job_id:
