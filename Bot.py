@@ -169,7 +169,7 @@ def send_message(chat_id, text):
         logging.error(f"send_message error: {e}")
 
 def format_date(raw_date):
-    """Formatowanie daty z paragonu (z kodu Unity, poprawione)"""
+    """Formatowanie daty DOKŁADNIE jak w kodzie Unity"""
     raw_date = raw_date.strip()
     
     # Popraw błędne formaty (np. 19/20 na 19/02)
@@ -178,15 +178,27 @@ def format_date(raw_date):
     if "/19" in raw_date and len(raw_date) == 5:
         return raw_date.replace("/19", "/01")
     
-    match = re.search(r'(\d{4})-(\d{2})-(\d{2})|(\d{2})[\.\/-](\d{2})[\.\/-](\d{4})|(\d{2})[\.\/-](\d{2})', raw_date)
+    # Wzór regex z Unity: (\d{4})-(\d{2})-(\d{2})|(\d{2})[\.\/-](\d{2})[\.\/-](\d{4})|(\d{2})[\.\/-](\d{2})|(\d{2})\s+(\w{3})
+    pattern = r'(\d{4})-(\d{2})-(\d{2})|(\d{2})[\.\/-](\d{2})[\.\/-](\d{4})|(\d{2})[\.\/-](\d{2})|(\d{2})\s+(\w{3})'
+    match = re.search(pattern, raw_date, re.IGNORECASE)
     
     if match:
+        # Format: YYYY-MM-DD
         if match.group(1):
             return f"{match.group(3)}/{match.group(2)}"
+        # Format: DD/MM/YYYY
         elif match.group(4):
             return f"{match.group(4)}/{match.group(5)}"
+        # Format: DD/MM
         elif match.group(7):
             return f"{match.group(7)}/{match.group(8)}"
+        # Format: DD MMM (np. 15 Jan)
+        elif match.group(9):
+            months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
+            month_text = match.group(10).lower()[:3]
+            month_num = months.index(month_text) + 1 if month_text in months else 1
+            return f"{match.group(9)}/{month_num:02d}"
+    
     return "UNKNOWN"
     
     match = re.search(r'(\d{4})-(\d{2})-(\d{2})|(\d{2})[\.\/-](\d{2})[\.\/-](\d{4})|(\d{2})[\.\/-](\d{2})', raw_date)
@@ -335,7 +347,7 @@ def get_google_sheet():
         return None
 
 def save_to_sheet(data):
-    """Zapis danych do Google Sheets (dokładnie tak, jak w Twojej tabeli)"""
+    """Zapis danych do Google Sheets DOKŁADNIE jak w tabeli"""
     logging.info("=== PRÓBA ZAPISU DO GOOGLE SHEETS ===")
     
     try:
@@ -345,16 +357,17 @@ def save_to_sheet(data):
             return False
         
         # KOLEJNOŚĆ KOLUMN w Twojej tabeli:
-        # B: data | C: dostawca | D: numer paragonu | E: płatność | F: expense item | G: kategoria | H: puste | I: kwota
+        # A: puste | B: data | C: dostawca | D: numer paragonu | E: płatność | F: expense | G: kategoria | H: puste | I: kwota
         row = [
-            data.get('date', ''),           # Kolumna B
-            data.get('supplier', ''),        # Kolumna C
-            data.get('bill_number', ''),     # Kolumna D
-            data.get('payment', ''),         # Kolumna E
-            data.get('expense_item', ''),    # Kolumna F
-            data.get('category', ''),        # Kolumna G
-            '',                               # Kolumna H (pusta)
-            data.get('amount', '')            # Kolumna I
+            '',                                    # Kolumna A - pusta
+            data.get('date', 'UNKNOWN'),           # Kolumna B - data
+            data.get('supplier', 'UNKNOWN'),       # Kolumna C - dostawca
+            data.get('bill_number', 'UNKNOWN'),    # Kolumna D - numer paragonu (nazwa pliku!)
+            data.get('payment', 'UNKNOWN'),        # Kolumna E - płatność
+            data.get('expense_item', 'UNKNOWN'),   # Kolumna F - expense item
+            data.get('category', 'UNKNOWN'),       # Kolumna G - kategoria
+            '',                                    # Kolumna H - pusta
+            data.get('amount', 'UNKNOWN')          # Kolumna I - kwota
         ]
         
         logging.info(f"   Próba zapisu wiersza: {row}")
@@ -388,18 +401,22 @@ def handle_start(chat_id):
 def handle_update(update):
     logging.info("=== NOWA WIADOMOŚĆ ===")
     
+    # Obsługa komendy /start
     if 'message' in update and 'text' in update['message']:
         if update['message']['text'] == '/start':
-            handle_start(update['message']['chat']['id'])
+            chat_id = update['message']['chat']['id']
+            send_message(chat_id, "👋 Bot wystartował! Wyślij zdjęcie paragonu.")
             return
     
+    # Sprawdzenie czy to zdjęcie
     if 'message' not in update or 'photo' not in update['message']:
         return
 
     chat_id = update['message']['chat']['id']
-    send_message(chat_id, "🔍 <b>Analizuję paragon...</b>")
+    send_message(chat_id, "🔍 Analizuję paragon...")
 
     try:
+        # Pobranie i zapis zdjęcia
         file_id = update['message']['photo'][-1]['file_id']
         file_info = requests.get(API_URL + f"getFile?file_id={file_id}", timeout=10).json()
         file_path = file_info['result']['file_path']
@@ -410,10 +427,16 @@ def handle_update(update):
             f.write(img_data)
         logging.info(f"📸 Pobrano zdjęcie: {len(img_data)} bajtów")
 
+        # Kodowanie do base64
         with open("receipt.jpg", "rb") as f:
             file_data = base64.b64encode(f.read()).decode("utf-8")
 
-        headers = {"Authorization": f"token {PADDLE_TOKEN}", "Content-Type": "application/json"}
+        # Wysłanie do PaddleOCR
+        headers = {
+            "Authorization": f"token {PADDLE_TOKEN}",
+            "Content-Type": "application/json"
+        }
+        
         payload = {
             "file": file_data,
             "fileType": 1,
@@ -432,6 +455,7 @@ def handle_update(update):
                     result = r.json()
                     
                     if result.get("errorCode") == 0:
+                        # Zbieranie tekstu z odpowiedzi
                         all_text = []
                         products_text = []
                         
@@ -449,15 +473,18 @@ def handle_update(update):
                             full_text = "\n".join(all_text)
                             products_text_full = "\n".join(products_text)
                             
+                            # ===== WYODRĘBNIANIE DANYCH =====
                             supplier = find_supplier(full_text)
                             date = "UNKNOWN"
                             amount = "UNKNOWN"
                             payment = "UNKNOWN"
                             
-                            date_match = re.search(r'(\d{2}[./-]\d{2}[./-]\d{4}|\d{2}[./-]\d{2}[./-]\d{2})', full_text)
+                            # Szukanie daty (używa poprawionej format_date z Unity)
+                            date_match = re.search(r'(\d{2}[./-]\d{2}[./-]\d{4}|\d{2}[./-]\d{2}[./-]\d{2}|\d{4}-\d{2}-\d{2})', full_text)
                             if date_match:
                                 date = format_date(date_match.group(1))
                             
+                            # Szukanie kwoty
                             amount_matches = re.findall(r'(\d+[.,]\d{2})\s*(?:aed|total|suma|kwota|amount)', full_text.lower())
                             if amount_matches:
                                 amount = clean_amount(amount_matches[-1])
@@ -466,17 +493,19 @@ def handle_update(update):
                                 if all_amounts:
                                     amount = clean_amount(all_amounts[-1])
                             
+                            # Szukanie płatności
                             if re.search(r'card|credit|debit|visa|master', full_text, re.IGNORECASE):
                                 payment = "card"
                             elif re.search(r'cash|kontant', full_text, re.IGNORECASE):
                                 payment = "cash"
                             
-                            bill_number = extract_bill_number(full_text)
-                            if bill_number == "UNKNOWN":
-                                bill_number = os.path.splitext(os.path.basename(file_path))[0]
+                            # 🔥 NUMER PARAGONU = NAZWA PLIKU (bez rozszerzenia)
+                            bill_number = os.path.splitext(os.path.basename(file_path))[0]
                             
+                            # Klasyfikacja (dokładnie jak w Unity)
                             expense_item, category = classify_receipt(supplier, amount, products_text_full)
                             
+                            # ===== PRZYGOTOWANIE DANYCH =====
                             receipt_data = {
                                 'supplier': supplier,
                                 'date': date,
@@ -487,24 +516,27 @@ def handle_update(update):
                                 'category': category
                             }
                             
+                            # ===== ZAPIS DO GOOGLE SHEETS =====
                             saved = save_to_sheet(receipt_data)
                             
-                            response = f"✅ <b>Paragon rozpoznany!</b>\n\n"
-                            response += f"🏪 <b>Dostawca:</b> {supplier}\n"
-                            response += f"📅 <b>Data:</b> {date}\n"
-                            response += f"💰 <b>Kwota:</b> {amount}\n"
-                            response += f"💳 <b>Płatność:</b> {payment}\n"
-                            response += f"🧾 <b>Nr paragonu:</b> {bill_number}\n"
-                            response += f"📦 <b>Expense:</b> {expense_item}\n"
-                            response += f"📁 <b>Kategoria:</b> {category}\n\n"
+                            # ===== ODPOWIEDŹ DLA UŻYTKOWNIKA =====
+                            response = f"✅ Paragon rozpoznany!\n\n"
+                            response += f"🏪 Dostawca: {supplier}\n"
+                            response += f"📅 Data: {date}\n"
+                            response += f"💰 Kwota: {amount}\n"
+                            response += f"💳 Płatność: {payment}\n"
+                            response += f"🧾 Nr paragonu: {bill_number}\n"
+                            response += f"📦 Expense: {expense_item}\n"
+                            response += f"📁 Kategoria: {category}\n\n"
                             
                             if saved:
-                                response += "📊 <b>✅ Zapisano do Google Sheets!</b>"
+                                response += "📊 Zapisano do Google Sheets!"
                             else:
-                                response += "⚠️ <b>Nie udało się zapisać do Sheets</b>"
+                                response += "⚠️ Nie udało się zapisać do Sheets"
                             
                             send_message(chat_id, response)
-                            logging.info(f"✅ Rozpoznano: {supplier}, {date}, {amount}")
+                            logging.info(f"✅ Rozpoznano: {supplier}, {date}, {amount}, nr: {bill_number}")
+                            
                         else:
                             send_message(chat_id, "😕 Nie znaleziono tekstu na paragonie")
                     else:
