@@ -433,39 +433,59 @@ def handle_update(update):
                                 date = f"{day}/{month}"
                                 logging.info(f"Znaleziono datę: {date}")
                             
-                            # ===== SZUKANIE KWOTY =====
+                            # ===== SZUKANIE KWOTY - ULEPSZONE =====
                             amount = "UNKNOWN"
+                            best_candidates = []
                             
-                            # Najpierw szukaj TOTAL, SUMA, KWOTA
-                            total_keywords = ['total', 'suma', 'kwota', 'amount', 'razem']
-                            
-                            best_amount = 0
-                            best_amount_str = "UNKNOWN"
-                            
+                            # Przejdź przez wszystkie linie
                             for line in all_text:
                                 line_lower = line.lower()
                                 
-                                # Sprawdź czy linia zawiera słowo kluczowe
-                                is_total = any(keyword in line_lower for keyword in total_keywords)
+                                # Sprawdź czy linia zawiera słowa kluczowe dla kwoty całkowitej
+                                total_keywords = ['total', 'bill amount', 'paid amount', 'amount', 'razem', 'suma', 'kwota', 'tot', 'subtotal', 'invoice', 'grand total']
+                                is_total_line = any(keyword in line_lower for keyword in total_keywords)
                                 
                                 # Znajdź wszystkie kwoty w linii
                                 numbers = re.findall(r'(\d+[.,]\d{2})', line)
+                                
                                 for num in numbers:
                                     try:
+                                        # Konwertuj na float dla porównania
                                         val = float(num.replace(',', '.'))
-                                        # Jeśli to linia z TOTAL, nadaj większą wagę
-                                        if is_total and val > best_amount:
-                                            best_amount = val
-                                            best_amount_str = num
-                                        # W przeciwnym razie bierz największą liczbę
-                                        elif not is_total and val > best_amount and best_amount == 0:
-                                            best_amount = val
-                                            best_amount_str = num
+                                        
+                                        # Zapisz kandydata z informacją o wadze
+                                        weight = 0
+                                        
+                                        # Linia z TOTAL ma najwyższy priorytet
+                                        if is_total_line:
+                                            weight += 100
+                                        
+                                        # Linia z ceną całkowitą często ma wyższą wagę
+                                        if val > 10:
+                                            weight += 10
+                                        if val > 50:
+                                            weight += 20
+                                        if val > 100:
+                                            weight += 30
+                                        
+                                        # Unikaj podejrzanie małych kwot (chyba że to TOTAL)
+                                        if val < 1 and not is_total_line:
+                                            weight -= 50
+                                        
+                                        # Sprawdź czy to może być kwota z podatkiem
+                                        if 'vat' in line_lower or 'tax' in line_lower:
+                                            if 'total' in line_lower or 'amount' in line_lower:
+                                                weight += 50
+                                        
+                                        best_candidates.append((weight, val, num))
                                     except:
                                         pass
                             
-                            if best_amount_str != "UNKNOWN":
-                                amount = clean_amount(best_amount_str)
+                            # Wybierz najlepszego kandydata (najwyższa waga)
+                            if best_candidates:
+                                best_candidates.sort(reverse=True)
+                                amount = clean_amount(best_candidates[0][2])
+                                logging.info(f"Wybrano kwotę: {amount} (waga: {best_candidates[0][0]})")
                             
                             # Jeśli nie znaleziono, szukaj wszystkich liczb i weź największą
                             if amount == "UNKNOWN":
@@ -482,14 +502,18 @@ def handle_update(update):
                                 if all_numbers:
                                     all_numbers.sort(reverse=True)
                                     amount = clean_amount(all_numbers[0][1])
+                                    logging.info(f"Znaleziono kwotę (największa): {amount}")
                             
                             # ===== SZUKANIE PŁATNOŚCI =====
                             payment = "UNKNOWN"
                             payment_text = ' '.join(all_text).lower()
                             
-                            if any(kw in payment_text for kw in ['card', 'credit', 'debit', 'visa', 'mastercard', 'karta']):
+                            card_keywords = ['card', 'credit', 'debit', 'visa', 'mastercard', 'karta']
+                            cash_keywords = ['cash', 'gotówka', 'gotowka', 'kontant']
+                            
+                            if any(kw in payment_text for kw in card_keywords):
                                 payment = "card"
-                            elif any(kw in payment_text for kw in ['cash', 'gotówka', 'gotowka', 'kontant']):
+                            elif any(kw in payment_text for kw in cash_keywords):
                                 payment = "cash"
                             
                             # 🔥 NUMER PARAGONU = NAZWA PLIKU
