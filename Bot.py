@@ -25,11 +25,10 @@ API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}/"
 
 # ==================== GOOGLE SHEETS ====================
 SHEET_ID = "1SHUyo_5sJYsQPiIIR9nCkAeJI2ZB5KQFx-1g0jXKaRw"
-SHEET_NAME = "Аркуш1"  # !!! ZMIEŃ NA SWOJĄ NAZWĘ ARKUSZA (sprawdź na dole tabeli) !!!
+SHEET_NAME = "Аркуш1"  # ZMIEŃ NA SWOJĄ NAZWĘ ARKUSZA
 
-# ==================== SŁOWNIKI (z Twojego kodu Unity) ====================
+# ==================== SŁOWNIKI ====================
 known_suppliers = {
-    # Supermarkety i sklepy spożywcze
     "carrefour": "Carrefour",
     "m mart": "M MART SUPERMARKET",
     "mmart": "M MART SUPERMARKET",
@@ -54,8 +53,6 @@ known_suppliers = {
     "al jazeera": "AL JAZEERA DISCOUNTS MARKETS",
     "hany": "HANY SUPERMARKET LLC OPC",
     "royal emirates": "ROYAL EMIRATES SUPERMARKET",
-    
-    # Dostawcy dla restauracji
     "chef": "Chef Middle East LLC",
     "sfg": "SFG General Trading Co. L.L.C",
     "waynik": "SFG General Trading Co. L.L.C",
@@ -66,21 +63,15 @@ known_suppliers = {
     "a & j": "A & J GENERAL TRADING",
     "eat well": "Eat Well Live Well",
     "demchenko": "DEMCHENKO FOODSTUFF TRADING CO. L.L.C",
-    
-    # Opakowania
     "hotpack": "Hotpack Packaging L.L.C",
     "falconpack": "Falconpack Investory LLC",
     "falcon": "Falconpack Investory LLC",
     "fallonpack": "FALLONPACK INDUSTRY",
-    
-    # Stacje paliw
     "adnoc": "ADNOC",
     "enoc": "ENOC",
     "emarat": "Emarat",
     "brothers gas": "Brothers Gas",
     "eppco": "EPPCO",
-    
-    # Inne
     "al ansari": "AL ANSARI EXCHANGE",
     "ansari": "AL ANSARI EXCHANGE",
     "foodics": "FOODICS",
@@ -95,7 +86,6 @@ known_suppliers = {
 }
 
 supplier_categories = {
-    # ingredients
     "carrefour": "ingredients",
     "m mart": "ingredients",
     "al aswaq": "ingredients",
@@ -126,31 +116,21 @@ supplier_categories = {
     "a & j": "ingredients",
     "eat well": "ingredients",
     "demchenko": "ingredients",
-    
-    # packaging
     "hotpack": "packaging",
     "falconpack": "packaging",
     "falcon": "packaging",
     "fallonpack": "packaging",
-    
-    # fuel stations
     "adnoc": "fuel",
     "enoc": "fuel",
     "emarat": "fuel",
     "brothers gas": "gas",
     "eppco": "fuel",
-    
-    # salary
     "al ansari": "salary",
     "ansari": "salary",
-    
-    # maintenance
     "sudhi": "maintenance",
     "al ershad": "maintenance",
     "al mumtaz": "maintenance",
     "fahen": "maintenance",
-    
-    # others
     "foodics": "others",
     "drc": "others",
     "value bag": "others",
@@ -169,51 +149,23 @@ def send_message(chat_id, text):
         logging.error(f"send_message error: {e}")
 
 def format_date(raw_date):
-    """Formatowanie daty DOKŁADNIE jak w kodzie Unity"""
-    raw_date = raw_date.strip()
+    """Formatowanie daty - czyszczenie i konwersja do formatu DD/MM"""
+    if not raw_date or raw_date == "UNKNOWN":
+        return "UNKNOWN"
     
-    # Popraw błędne formaty (np. 19/20 na 19/02)
-    if "/20" in raw_date and len(raw_date) == 5:
-        return raw_date.replace("/20", "/02")
-    if "/19" in raw_date and len(raw_date) == 5:
-        return raw_date.replace("/19", "/01")
+    # Usuń wszystkie znaki specjalne, zostaw tylko cyfry i ukośniki
+    raw_date = re.sub(r'[^\d/]', '', raw_date)
     
-    # Wzór regex z Unity
-    pattern = r'(\d{4})-(\d{2})-(\d{2})|(\d{2})[\.\/-](\d{2})[\.\/-](\d{4})|(\d{2})[\.\/-](\d{2})|(\d{2})\s+(\w{3})'
-    match = re.search(pattern, raw_date, re.IGNORECASE)
-    
+    # Szukaj wzorca DD/MM lub DD/MM/YYYY
+    match = re.search(r'(\d{1,2})/?(\d{1,2})', raw_date)
     if match:
-        # Format: YYYY-MM-DD
-        if match.group(1):
-            return f"{match.group(3)}/{match.group(2)}"
-        # Format: DD/MM/YYYY
-        elif match.group(4):
-            return f"{match.group(4)}/{match.group(5)}"
-        # Format: DD/MM
-        elif match.group(7):
-            return f"{match.group(7)}/{match.group(8)}"
-        # Format: DD MMM (np. 15 Jan)
-        elif match.group(9):
-            months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
-            month_text = match.group(10).lower()[:3]
-            month_num = months.index(month_text) + 1 if month_text in months else 1
-            return f"{match.group(9)}/{month_num:02d}"
+        day = match.group(1).zfill(2)
+        month = match.group(2).zfill(2)
+        return f"{day}/{month}"
     
-    return "UNKNOWN"
-    
-    match = re.search(r'(\d{4})-(\d{2})-(\d{2})|(\d{2})[\.\/-](\d{2})[\.\/-](\d{4})|(\d{2})[\.\/-](\d{2})', raw_date)
-    
-    if match:
-        if match.group(1):
-            return f"{match.group(3)}/{match.group(2)}"
-        elif match.group(4):
-            return f"{match.group(4)}/{match.group(5)}"
-        elif match.group(7):
-            return f"{match.group(7)}/{match.group(8)}"
     return "UNKNOWN"
 
 def normalize_payment(raw):
-    """Normalizacja metody płatności (z kodu Unity)"""
     raw = raw.lower()
     if any(x in raw for x in ['card', 'karta', 'credit', 'debit', 'visa', 'master', 'carta', 'carte']):
         return "card"
@@ -222,7 +174,9 @@ def normalize_payment(raw):
     return "UNKNOWN"
 
 def clean_amount(raw_amount):
-    """Czyszczenie kwoty (z kodu Unity)"""
+    if not raw_amount or raw_amount == "UNKNOWN":
+        return "UNKNOWN"
+    
     cleaned = re.sub(r'[^\d.,]', '', raw_amount)
     cleaned = cleaned.replace('.', ',')
     if cleaned.count(',') > 1:
@@ -232,7 +186,6 @@ def clean_amount(raw_amount):
     return cleaned
 
 def find_supplier(text):
-    """Znajdź dostawcę w tekście (z kodu Unity)"""
     text_lower = text.lower()
     for key, value in known_suppliers.items():
         if key in text_lower:
@@ -240,18 +193,13 @@ def find_supplier(text):
     return "UNKNOWN"
 
 def classify_receipt(supplier, amount_str, products=""):
-    """Klasyfikacja paragonu (dokładna kopia z Unity)"""
     supplier_lower = supplier.lower()
     
-    # Al Ansari Exchange - salary
     if 'ansari' in supplier_lower:
         return "salary", "salary"
-    
-    # Brothers Gas - gas
     if 'brothers gas' in supplier_lower:
         return "gas", "utilities"
     
-    # Stacje paliw
     if any(x in supplier_lower for x in ['adnoc', 'enoc', 'emarat', 'eppco']):
         try:
             amount = float(amount_str.replace(',', '.'))
@@ -260,17 +208,14 @@ def classify_receipt(supplier, amount_str, products=""):
         except:
             return "car fuel", "others"
     
-    # Dostawcy opakowań
     if any(x in supplier_lower for x in ['hotpack', 'falconpack', 'falcon', 'pack']):
         return "packaging", "packaging"
     
-    # Warsztaty
     if any(x in supplier_lower for x in ['sudhi', 'al ershad', 'al mumtaz', 'fahen']):
         if 'oil' in products.lower():
             return "bike oil", "others"
         return "maintenance", "maintenance"
     
-    # Kategoria z słownika
     for key, category in supplier_categories.items():
         if key in supplier_lower:
             if category == "ingredients":
@@ -285,27 +230,10 @@ def classify_receipt(supplier, amount_str, products=""):
             else:
                 return category, category
     
-    # Domyślnie
     return "ingredients", "ingredients"
-
-def extract_bill_number(text):
-    """Wyodrębnij numer paragonu"""
-    patterns = [
-        r'order[:\s]*([a-zA-Z0-9\-_]+)',
-        r'bill[:\s]*([a-zA-Z0-9\-_]+)',
-        r'invoice[:\s]*([a-zA-Z0-9\-_]+)',
-        r'no[.:\s]*([a-zA-Z0-9\-_]+)',
-        r'#\s*([a-zA-Z0-9\-_]+)'
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            return match.group(1)
-    return "UNKNOWN"
 
 # ==================== FUNKCJE GOOGLE SHEETS ====================
 def get_google_sheet():
-    """Połączenie z Google Sheets z pełnym logowaniem"""
     logging.info("=== PRÓBA POŁĄCZENIA Z GOOGLE SHEETS ===")
     
     possible_paths = [
@@ -347,12 +275,9 @@ def get_google_sheet():
         return None
 
 def save_to_sheet(data):
-    """Zapis danych do Google Sheets z czyszczeniem i pustymi kolumnami A i H"""
     logging.info("=== PRÓBA ZAPISU DO GOOGLE SHEETS ===")
     
-    # Funkcja do czyszczenia danych
     def clean_value(value):
-        """Czyści wartość: UNKNOWN -> pusty string, usuwa spacje, zamienia na string"""
         if value == "UNKNOWN" or not value:
             return ""
         return str(value).strip()
@@ -363,40 +288,37 @@ def save_to_sheet(data):
             logging.error("❌ Nie można uzyskać dostępu do arkusza")
             return False
         
-        # KOLEJNOŚĆ KOLUMN w Twojej tabeli:
-        # A: puste | B: data | C: dostawca | D: numer paragonu | E: płatność | F: expense | G: kategoria | H: puste | I: kwota
         row = [
-            '',                                      # Kolumna A - pusta
-            clean_value(data.get('date', '')),       # Kolumna B - data
-            clean_value(data.get('supplier', '')),   # Kolumna C - dostawca
-            clean_value(data.get('bill_number', '')),# Kolumna D - numer paragonu
-            clean_value(data.get('payment', '')),    # Kolumna E - płatność
-            clean_value(data.get('expense_item', '')), # Kolumna F - expense item
-            clean_value(data.get('category', '')),   # Kolumna G - kategoria
-            '',                                      # Kolumna H - pusta
-            clean_value(data.get('amount', ''))      # Kolumna I - kwota
+            '',
+            clean_value(data.get('date', '')),
+            clean_value(data.get('supplier', '')),
+            clean_value(data.get('bill_number', '')),
+            clean_value(data.get('payment', '')),
+            clean_value(data.get('expense_item', '')),
+            clean_value(data.get('category', '')),
+            '',
+            clean_value(data.get('amount', ''))
         ]
         
         logging.info(f"   Próba zapisu wiersza: {row}")
-        result = sheet.append_row(row)
+        sheet.append_row(row)
         logging.info(f"✅ Zapisano do Google Sheets")
         return True
         
     except Exception as e:
         logging.error(f"❌ Błąd zapisu: {str(e)}")
-        logging.error(f"   Typ błędu: {type(e).__name__}")
         return False
 
 # ==================== GŁÓWNA LOGIKA BOTA ====================
 def handle_start(chat_id):
     welcome_text = """
-🤖 <b>Receipt Scanner Bot v3.0</b>
+🤖 <b>Receipt Scanner Bot v4.0</b>
 
 📸 <b>Co potrafię:</b>
 • Rozpoznaję tekst z paragonów
-• Klasyfikuję dostawców (jak w twoim kodzie Unity)
+• Klasyfikuję dostawców
 • Rozróżniam metody płatności
-• Zapisuję dane do Google Sheets (dokładnie w twoich kolumnach)
+• Zapisuję dane do Google Sheets
 
 📋 <b>Jak używać:</b>
 1. Wyślij mi zdjęcie paragonu
@@ -406,8 +328,24 @@ def handle_start(chat_id):
 """
     send_message(chat_id, welcome_text)
 
+# Zbiór przetworzonych już ID, żeby nie analizować wielokrotnie
+processed_updates = set()
+
 def handle_update(update):
+    global processed_updates
+    
     logging.info("=== NOWA WIADOMOŚĆ ===")
+    
+    # Zapobieganie wielokrotnemu przetwarzaniu
+    update_id = update.get('update_id')
+    if update_id in processed_updates:
+        logging.info(f"Pominięto już przetworzone update_id: {update_id}")
+        return
+    processed_updates.add(update_id)
+    
+    # Ograniczenie wielkości zbioru
+    if len(processed_updates) > 100:
+        processed_updates = set(list(processed_updates)[-50:])
     
     # Obsługa komendy /start
     if 'message' in update and 'text' in update['message']:
@@ -484,66 +422,52 @@ def handle_update(update):
                             # ===== WYODRĘBNIANIE DANYCH =====
                             supplier = find_supplier(full_text)
                             
-                            # ===== LEPSZE SZUKANIE DATY =====
+                            # ===== SZUKANIE DATY =====
                             date = "UNKNOWN"
                             
-                            # Szukaj różnych formatów daty
-                            date_patterns = [
-                                r'(\d{2})[./-](\d{2})[./-](\d{4})',  # DD/MM/YYYY
-                                r'(\d{4})[./-](\d{2})[./-](\d{2})',  # YYYY-MM-DD
-                                r'(\d{2})[./-](\d{2})[./-](\d{2})',  # DD/MM/YY
-                                r'(\d{1,2})\s+(\w{3,9})\s+(\d{4})',   # 15 January 2024
-                                r'(\d{2})\s+(\w{3})',                 # 15 Jan
-                            ]
+                            # Najpierw szukaj w całym tekście wzorca daty
+                            date_match = re.search(r'(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})', full_text)
+                            if date_match:
+                                day = date_match.group(1).zfill(2)
+                                month = date_match.group(2).zfill(2)
+                                date = f"{day}/{month}"
+                                logging.info(f"Znaleziono datę: {date}")
                             
-                            for pattern in date_patterns:
-                                match = re.search(pattern, full_text, re.IGNORECASE)
-                                if match:
-                                    if len(match.groups()) == 3:
-                                        # DD/MM/YYYY lub YYYY-MM-DD
-                                        if len(match.group(1)) == 4:  # YYYY-MM-DD
-                                            clean_date = f"{match.group(3).zfill(2)}/{match.group(2).zfill(2)}"
-                                        else:  # DD/MM/YYYY lub DD/MM/YY
-                                            clean_date = f"{match.group(1).zfill(2)}/{match.group(2).zfill(2)}"
-                                        date = clean_date
-                                        break
-                                    elif len(match.groups()) == 2:
-                                        # DD MMM
-                                        months = {"jan": "01", "feb": "02", "mar": "03", "apr": "04",
-                                                  "may": "05", "jun": "06", "jul": "07", "aug": "08",
-                                                  "sep": "09", "oct": "10", "nov": "11", "dec": "12"}
-                                        month_text = match.group(2).lower()[:3]
-                                        if month_text in months:
-                                            date = f"{match.group(1).zfill(2)}/{months[month_text]}"
-                                            break
-                            
-                            # ===== LEPSZE SZUKANIE KWOTY =====
+                            # ===== SZUKANIE KWOTY =====
                             amount = "UNKNOWN"
                             
                             # Najpierw szukaj TOTAL, SUMA, KWOTA
-                            total_keywords = ['total', 'suma', 'kwota', 'amount', 'razem', 'do zapłaty', 'do zaplaty']
+                            total_keywords = ['total', 'suma', 'kwota', 'amount', 'razem']
                             
-                            # Szukaj wersów z keywords
+                            best_amount = 0
+                            best_amount_str = "UNKNOWN"
+                            
                             for line in all_text:
                                 line_lower = line.lower()
-                                if any(keyword in line_lower for keyword in total_keywords):
-                                    numbers = re.findall(r'(\d+[.,]\d{2})', line)
-                                    if numbers:
-                                        # Znajdź największą liczbę (często to całkowita kwota)
-                                        numeric_values = []
-                                        for num in numbers:
-                                            try:
-                                                val = float(num.replace(',', '.'))
-                                                numeric_values.append((val, num))
-                                            except:
-                                                pass
-                                        if numeric_values:
-                                            # Wybierz największą wartość
-                                            numeric_values.sort(reverse=True)
-                                            amount = clean_amount(numeric_values[0][1])
-                                            break
+                                
+                                # Sprawdź czy linia zawiera słowo kluczowe
+                                is_total = any(keyword in line_lower for keyword in total_keywords)
+                                
+                                # Znajdź wszystkie kwoty w linii
+                                numbers = re.findall(r'(\d+[.,]\d{2})', line)
+                                for num in numbers:
+                                    try:
+                                        val = float(num.replace(',', '.'))
+                                        # Jeśli to linia z TOTAL, nadaj większą wagę
+                                        if is_total and val > best_amount:
+                                            best_amount = val
+                                            best_amount_str = num
+                                        # W przeciwnym razie bierz największą liczbę
+                                        elif not is_total and val > best_amount and best_amount == 0:
+                                            best_amount = val
+                                            best_amount_str = num
+                                    except:
+                                        pass
                             
-                            # Jeśli nie znaleziono, szukaj wszystkich liczb i wybierz największą
+                            if best_amount_str != "UNKNOWN":
+                                amount = clean_amount(best_amount_str)
+                            
+                            # Jeśli nie znaleziono, szukaj wszystkich liczb i weź największą
                             if amount == "UNKNOWN":
                                 all_numbers = []
                                 for line in all_text:
@@ -556,7 +480,6 @@ def handle_update(update):
                                             pass
                                 
                                 if all_numbers:
-                                    # Wybierz największą wartość
                                     all_numbers.sort(reverse=True)
                                     amount = clean_amount(all_numbers[0][1])
                             
@@ -564,18 +487,15 @@ def handle_update(update):
                             payment = "UNKNOWN"
                             payment_text = ' '.join(all_text).lower()
                             
-                            card_keywords = ['card', 'credit', 'debit', 'visa', 'mastercard', 'karta']
-                            cash_keywords = ['cash', 'gotówka', 'gotowka', 'kontant']
-                            
-                            if any(kw in payment_text for kw in card_keywords):
+                            if any(kw in payment_text for kw in ['card', 'credit', 'debit', 'visa', 'mastercard', 'karta']):
                                 payment = "card"
-                            elif any(kw in payment_text for kw in cash_keywords):
+                            elif any(kw in payment_text for kw in ['cash', 'gotówka', 'gotowka', 'kontant']):
                                 payment = "cash"
                             
-                            # 🔥 NUMER PARAGONU = NAZWA PLIKU (bez rozszerzenia)
+                            # 🔥 NUMER PARAGONU = NAZWA PLIKU
                             bill_number = os.path.splitext(os.path.basename(file_path))[0]
                             
-                            # Klasyfikacja (dokładnie jak w Unity)
+                            # Klasyfikacja
                             expense_item, category = classify_receipt(supplier, amount, products_text_full)
                             
                             # ===== PRZYGOTOWANIE DANYCH =====
