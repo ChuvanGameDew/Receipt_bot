@@ -53,17 +53,12 @@ async def photo(message: types.Message):
             await message.answer("❌ Нет ID задачи")
             return
 
-        # Отправляем сообщение о начале проверок
         status_msg = await message.answer("⏳ Проверяю статус...")
         
-        # Делаем 10 проверок с интервалом 2 секунды
         for attempt in range(1, 11):
             await asyncio.sleep(2)
-            
-            # Обновляем сообщение о попытке
             await status_msg.edit_text(f"⏳ Проверка {attempt}/10...")
             
-            # Проверяем статус
             status_r = requests.get(
                 f"https://api.ocrbase.dev/v1/jobs/{job_id}",
                 headers={"Authorization": f"Bearer {OCR_KEY}"}
@@ -74,7 +69,6 @@ async def photo(message: types.Message):
                 status = job_data.get('status')
                 
                 if status == 'completed':
-                    # Задача выполнена - получаем текст
                     text = job_data.get('markdownResult') or job_data.get('text', '')
                     if text:
                         await status_msg.edit_text(f"✅ Готово!")
@@ -86,16 +80,15 @@ async def photo(message: types.Message):
                     await status_msg.edit_text(f"❌ Ошибка обработки")
                     break
                 elif attempt == 10:
-                    await status_msg.edit_text(f"❌ Таймаут - задача не обработалась")
+                    await status_msg.edit_text(f"❌ Таймаут")
             else:
-                await status_msg.edit_text(f"❌ Ошибка проверки статуса")
+                await status_msg.edit_text(f"❌ Ошибка проверки")
                 break
         else:
             await status_msg.edit_text(f"❌ Таймаут ожидания")
     else:
         await message.answer(f"❌ Ошибка: {r.status_code}")
 
-    # Удаляем временный файл
     if os.path.exists("receipt.jpg"):
         os.remove("receipt.jpg")
 
