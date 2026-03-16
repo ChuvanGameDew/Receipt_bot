@@ -178,7 +178,7 @@ def format_date(raw_date):
     if "/19" in raw_date and len(raw_date) == 5:
         return raw_date.replace("/19", "/01")
     
-    # Wzór regex z Unity: (\d{4})-(\d{2})-(\d{2})|(\d{2})[\.\/-](\d{2})[\.\/-](\d{4})|(\d{2})[\.\/-](\d{2})|(\d{2})\s+(\w{3})
+    # Wzór regex z Unity
     pattern = r'(\d{4})-(\d{2})-(\d{2})|(\d{2})[\.\/-](\d{2})[\.\/-](\d{4})|(\d{2})[\.\/-](\d{2})|(\d{2})\s+(\w{3})'
     match = re.search(pattern, raw_date, re.IGNORECASE)
     
