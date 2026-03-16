@@ -20,7 +20,7 @@ API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}/"
 
 # ==================== GOOGLE SHEETS ====================
 SHEET_ID = "1SHUyo_5sJYsQPiIIR9nCkAeJI2ZB5KQFx-1g0jXKaRw"
-SHEET_NAME = "Лист1"  # Sprawdź nazwę swojego arkusza na dole tabeli!
+SHEET_NAME = "Аркуш1"  # Sprawdź nazwę swojego arkusza na dole tabeli!
 
 def get_google_sheet():
     """Połączenie z Google Sheets"""
