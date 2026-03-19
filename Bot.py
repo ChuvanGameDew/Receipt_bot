@@ -709,7 +709,6 @@ def handle_update(update):
             return
 
     # Normalna obsługa pojedynczego zdjęcia
-       # Normalna obsługa pojedynczego zdjęcia
     if 'message' in update and 'photo' in update['message']:
         chat_id = update['message']['chat']['id']
         user_id = update['message']['from']['id']
@@ -757,3 +756,32 @@ def handle_update(update):
 
             os.remove(filename)
             return
+
+# ==================== SERWER HTTP ====================
+class Handler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        content_len = int(self.headers.get('Content-Length', 0))
+        post_body = self.rfile.read(content_len)
+        try:
+            update = json.loads(post_body)
+            handle_update(update)
+        except Exception as e:
+            logging.exception(f"Błąd w POST: {e}")
+        finally:
+            self.send_response(200)
+            self.end_headers()
+
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is running")
+
+def main():
+    port = int(os.environ.get('PORT', 10000))
+    server = HTTPServer(("0.0.0.0", port), Handler)
+    logging.info(f"🚀 Bot z Cohere AI, autoryzacją i trybem archiwizacji wystartował na porcie {port}")
+    logging.info(f"📊 Google Sheets ID: {SHEET_ID}")
+    server.serve_forever()
+
+if __name__ == "__main__":
+    main()
