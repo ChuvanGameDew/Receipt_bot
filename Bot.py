@@ -316,39 +316,37 @@ def check_authorization(user_id, message_text, chat_id):
     
     # Sprawdź, czy to hasło użytkownika (jednorazowe)
     if message_text and message_text in USER_PASSWORDS:
-        password_info = USER_PASSWORDS[message_text]
-        
         # Sprawdź, czy hasło nie zostało już użyte
-        if password_info['used']:
+        if USER_PASSWORDS[message_text]['used']:
             send_message(chat_id, "❌ To hasło zostało już wykorzystane przez innego użytkownika.")
             return False
         
         # Autoryzuj użytkownika
         authorized_users[user_id] = {
             'type': 'user',
-            'max_photos': password_info['max_photos'],
-            'photos_used': 0
+            'max_photos': USER_PASSWORDS[message_text]['max_photos'],
+            'photos_used': 0,
+            'used_password': message_text
         }
         # Oznacz hasło jako użyte
         USER_PASSWORDS[message_text]['used'] = True
         USER_PASSWORDS[message_text]['used_by'] = user_id
         save_data()
-        send_message(chat_id, f"✅ Hasło poprawne! Możesz wysłać maksymalnie {password_info['max_photos']} zdjęć.")
+        send_message(chat_id, f"✅ Hasło poprawne! Możesz wysłać maksymalnie {USER_PASSWORDS[message_text]['max_photos']} zdjęć.")
         return True
     
     # Sprawdź, czy to hasło administratora (też jednorazowe!)
     if message_text and message_text in ADMIN_PASSWORDS:
-        admin_info = ADMIN_PASSWORDS[message_text]
-        
         # Sprawdź, czy hasło nie zostało już użyte
-        if admin_info['used']:
+        if ADMIN_PASSWORDS[message_text]['used']:
             send_message(chat_id, "❌ To hasło administratorskie zostało już wykorzystane przez innego użytkownika.")
             return False
         
         # Autoryzuj użytkownika jako administratora
         authorized_users[user_id] = {
             'type': 'admin',
-            'photos_used': 0
+            'photos_used': 0,
+            'used_password': message_text
         }
         # Oznacz hasło jako użyte
         ADMIN_PASSWORDS[message_text]['used'] = True
