@@ -29,13 +29,12 @@ API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}/"
 
 # ==================== GOOGLE SHEETS ====================
 SHEET_ID = "1SHUyo_5sJYsQPiIIR9nCkAeJI2ZB5KQFx-1g0jXKaRw"
-# !!! WAŻNE: Zmień na dokładną nazwę swojego arkusza (sprawdź na dole tabeli) !!!
-SHEET_NAME = "Аркуш1"  # np. "Arkusz1", "Sheet1", "Лист1"
+SHEET_NAME = "Аркуш1"  # ZMIEŃ NA SWOJĄ NAZWĘ ARKUSZA
 
 # ==================== KONFIGURACJA AUTORYZACJI ====================
-DATA_FILE = "bot_data.json"  # Plik do przechowywania danych
+DATA_FILE = "bot_data.json"
 
-# Domyślne hasła (zostaną nadpisane przez dane z pliku, jeśli istnieją)
+# Domyślne hasła – wszystkie są jednorazowe!
 USER_PASSWORDS = {
     "user1234": {"used": False, "max_photos": 5, "used_by": None},
     "user5678": {"used": False, "max_photos": 5, "used_by": None},
@@ -43,11 +42,11 @@ USER_PASSWORDS = {
 }
 
 ADMIN_PASSWORDS = {
-    "admin08": True,
-    "admin09": True, 
-    "admin10": True,
-    "admin11": True,
-    "admin12": True
+    "admin08": {"used": False, "used_by": None},
+    "admin09": {"used": False, "used_by": None},
+    "admin10": {"used": False, "used_by": None},
+    "admin11": {"used": False, "used_by": None},
+    "admin12": {"used": False, "used_by": None}
 }
 
 authorized_users = {}  # ID autoryzowanych użytkowników
@@ -55,15 +54,16 @@ authorized_users = {}  # ID autoryzowanych użytkowników
 # ==================== FUNKCJE DO ZAPISU/ODCZYTU DANYCH ====================
 def load_data():
     """Ładuje dane z pliku JSON"""
-    global authorized_users, USER_PASSWORDS
+    global authorized_users, USER_PASSWORDS, ADMIN_PASSWORDS
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 authorized_users = data.get('authorized_users', {})
-                # Konwersja kluczy z powrotem na int (bo JSON zapisuje je jako stringi)
+                # Konwersja kluczy z powrotem na int
                 authorized_users = {int(k): v for k, v in authorized_users.items()}
                 USER_PASSWORDS = data.get('user_passwords', USER_PASSWORDS)
+                ADMIN_PASSWORDS = data.get('admin_passwords', ADMIN_PASSWORDS)
                 logging.info(f"✅ Wczytano dane z pliku {DATA_FILE}")
         except Exception as e:
             logging.error(f"❌ Błąd wczytywania danych: {e}")
@@ -75,7 +75,8 @@ def save_data():
     try:
         data = {
             'authorized_users': authorized_users,
-            'user_passwords': USER_PASSWORDS
+            'user_passwords': USER_PASSWORDS,
+            'admin_passwords': ADMIN_PASSWORDS
         }
         with open(DATA_FILE, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
@@ -197,7 +198,7 @@ supplier_categories = {
     "ruads": "others"
 }
 
-# ==================== STAN UŻYTKOWNIKÓW (dla trybu archiwizacji) ====================
+# ==================== STAN UŻYTKOWNIKÓW ====================
 user_states = {}
 user_photos = defaultdict(list)
 user_analysis_results = defaultdict(list)
@@ -294,8 +295,7 @@ def get_receipt_fingerprint(receipt_data):
 # ==================== FUNKCJE AUTORYZACJI ====================
 def check_authorization(user_id, message_text, chat_id):
     """
-    Sprawdza autoryzację użytkownika z systemem wielu haseł.
-    Dane są automatycznie zapisywane do pliku JSON.
+    Sprawdza autoryzację użytkownika – wszystkie hasła są jednorazowe!
     """
     global USER_PASSWORDS, ADMIN_PASSWORDS, authorized_users
     
@@ -314,7 +314,7 @@ def check_authorization(user_id, message_text, chat_id):
         send_message(chat_id, "🔒 Ten bot jest chroniony hasłem. Podaj hasło dostępu.")
         return False
     
-    # Sprawdź, czy to hasło użytkownika (jednorazowe, limit 5)
+    # Sprawdź, czy to hasło użytkownika (jednorazowe)
     if message_text and message_text in USER_PASSWORDS:
         password_info = USER_PASSWORDS[message_text]
         
@@ -332,18 +332,28 @@ def check_authorization(user_id, message_text, chat_id):
         # Oznacz hasło jako użyte
         USER_PASSWORDS[message_text]['used'] = True
         USER_PASSWORDS[message_text]['used_by'] = user_id
-        save_data()  # Zapisz zmiany do pliku
+        save_data()
         send_message(chat_id, f"✅ Hasło poprawne! Możesz wysłać maksymalnie {password_info['max_photos']} zdjęć.")
         return True
     
-    # Sprawdź, czy to hasło administratora (wielokrotne, bez limitu)
+    # Sprawdź, czy to hasło administratora (też jednorazowe!)
     if message_text and message_text in ADMIN_PASSWORDS:
+        admin_info = ADMIN_PASSWORDS[message_text]
+        
+        # Sprawdź, czy hasło nie zostało już użyte
+        if admin_info['used']:
+            send_message(chat_id, "❌ To hasło administratorskie zostało już wykorzystane przez innego użytkownika.")
+            return False
+        
         # Autoryzuj użytkownika jako administratora
         authorized_users[user_id] = {
             'type': 'admin',
             'photos_used': 0
         }
-        save_data()  # Zapisz zmiany do pliku
+        # Oznacz hasło jako użyte
+        ADMIN_PASSWORDS[message_text]['used'] = True
+        ADMIN_PASSWORDS[message_text]['used_by'] = user_id
+        save_data()
         send_message(chat_id, "✅ Hasło administratorskie! Nie masz limitu zdjęć.")
         return True
     
@@ -352,7 +362,7 @@ def check_authorization(user_id, message_text, chat_id):
     return False
 
 def increment_photo_count(user_id, chat_id):
-    """Zwiększa licznik wysłanych zdjęć dla użytkownika i zapisuje do pliku"""
+    """Zwiększa licznik wysłanych zdjęć dla użytkownika"""
     if user_id in authorized_users:
         user_info = authorized_users[user_id]
         
@@ -360,13 +370,12 @@ def increment_photo_count(user_id, chat_id):
             user_info['photos_used'] += 1
             remaining = user_info['max_photos'] - user_info['photos_used']
             logging.info(f"Użytkownik {user_id} wykorzystał {user_info['photos_used']}/{user_info['max_photos']} zdjęć")
-            save_data()  # Zapisz zmiany do pliku
+            save_data()
             
             if remaining <= 0:
                 send_message(chat_id, f"⚠️ To było ostatnie zdjęcie z Twojego limitu. Dostęp wygasł.")
             elif remaining <= 2:
                 send_message(chat_id, f"⚠️ Pozostało Ci tylko {remaining} zdjęć.")
-        # Admini nie mają licznika
         return True
     return False
 
@@ -508,7 +517,7 @@ async def analyze_image_with_cohere(image_path, chat_id):
 # ==================== GŁÓWNA LOGIKA BOTA ====================
 def handle_start(chat_id):
     welcome_text = """
-🤖 <b>Receipt Scanner Bot v6.0</b>
+🤖 <b>Receipt Scanner Bot v6.1</b>
 
 📸 <b>Co potrafię:</b>
 • Rozpoznaję tekst z paragonów
@@ -516,6 +525,7 @@ def handle_start(chat_id):
 • Rozróżniam metody płatności
 • Zapisuję dane do Google Sheets
 • Tryb archiwizacji /chuvan
+• System haseł jednorazowych
 
 📋 <b>Jak używać:</b>
 1. Wyślij mi zdjęcie paragonu
@@ -528,7 +538,6 @@ def handle_start(chat_id):
 def handle_update(update):
     logging.info("=== NOWA WIADOMOŚĆ ===")
 
-    # Sprawdź czy wiadomość zawiera tekst lub zdjęcie
     if 'message' in update:
         chat_id = update['message']['chat']['id']
         user_id = update['message']['from']['id']
@@ -536,7 +545,7 @@ def handle_update(update):
         
         # ===== AUTORYZACJA =====
         if not check_authorization(user_id, message_text, chat_id):
-            return  # Jeśli nie autoryzowany, zakończ obsługę
+            return
         
         # Jeśli to zdjęcie, sprawdź limit
         if 'photo' in update['message']:
@@ -587,7 +596,6 @@ def handle_update(update):
                 
                 send_message(chat_id, f"✅ Zapisano {len(user_analysis_results[user_id])} wierszy w tabeli!")
                 
-                # Wyczyść stan
                 del user_states[user_id]
                 del user_photos[user_id]
                 del user_analysis_results[user_id]
@@ -614,7 +622,6 @@ def handle_update(update):
             current_count = len(user_photos[user_id]) + 1
             send_message(chat_id, f"🔍 Analizuję zdjęcie {current_count}...")
             
-            # Analiza zdjęcia
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             receipt_data = loop.run_until_complete(analyze_image_with_cohere(filename, chat_id))
@@ -625,14 +632,14 @@ def handle_update(update):
                 user_photos[user_id].append((filename, img_data))
                 send_message(chat_id, f"✅ Otrzymałem ({current_count})")
                 
-                # Zwiększ licznik zdjęć dla autoryzacji
+                # Zwiększ licznik zdjęć
                 increment_photo_count(user_id, chat_id)
             else:
                 send_message(chat_id, "⚠️ Nie udało się przeanalizować zdjęcia")
                 os.remove(filename)
             return
 
-    # Obsługa odpowiedzi z nazwą początkową (ARCHIVE_ASK_NAME)
+    # Obsługa odpowiedzi z nazwą początkową
     if 'message' in update and 'text' in update['message']:
         text = update['message']['text']
         chat_id = update['message']['chat']['id']
@@ -643,13 +650,11 @@ def handle_update(update):
             
             send_message(chat_id, f"⏳ Tworzę archiwum ZIP dla {len(user_photos[user_id])} zdjęć...")
 
-            # Wyodrębnij numer początkowy z nazwy (np. z "b235" weźmie 235)
             match = re.search(r'(\d+)$', base_name)
             if match:
                 start_num = int(match.group(1))
                 prefix = base_name[:match.start()]
                 
-                # Tworzenie archiwum ZIP
                 zip_buffer = io.BytesIO()
                 with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
                     for idx, (filename, img_data) in enumerate(user_photos[user_id]):
@@ -659,20 +664,16 @@ def handle_update(update):
                 
                 zip_buffer.seek(0)
 
-                # Wyślij ZIP
                 files = {'document': ('archiwum.zip', zip_buffer.getvalue())}
                 requests.post(API_URL + 'sendDocument', data={'chat_id': chat_id}, files=files)
 
-                # Wyślij każde zdjęcie po kolei z opisem
                 send_message(chat_id, f"📸 Wysyłam {len(user_analysis_results[user_id])} przeanalizowanych zdjęć:")
                 
                 for idx, (filename, img_data) in enumerate(user_photos[user_id]):
-                    # Wyślij zdjęcie
                     with open(filename, 'rb') as f:
                         files = {'photo': (f'zdjecie_{idx+1}.jpg', f, 'image/jpeg')}
                         requests.post(API_URL + 'sendPhoto', data={'chat_id': chat_id}, files=files)
                     
-                    # Wyślij opis
                     data = user_analysis_results[user_id][idx]
                     current_number = start_num + idx
                     response = f"✅ Paragon rozpoznany!\n\n"
@@ -686,23 +687,19 @@ def handle_update(update):
                     
                     send_message(chat_id, response)
 
-                # Zapisz wszystkie dane do tabeli z poprawnymi numerami
                 send_message(chat_id, f"⏳ Zapisuję {len(user_analysis_results[user_id])} wierszy w Google Sheets...")
 
                 saved_count = 0
                 for idx, data in enumerate(user_analysis_results[user_id]):
                     current_number = start_num + idx
-                    # Nadpisz numer paragonu tym, co jest w nazwie pliku
                     data['bill_number'] = f"{prefix}{current_number}"
                     if save_to_sheet(data):
                         saved_count += 1
 
                 send_message(chat_id, f"✅ Zapisano {saved_count} z {len(user_analysis_results[user_id])} wierszy w tabeli!")
 
-                # Wyczyść stan
                 del user_states[user_id]
                 
-                # Usuń pliki tymczasowe
                 for filename, _ in user_photos[user_id]:
                     if os.path.exists(filename):
                         os.remove(filename)
@@ -713,7 +710,7 @@ def handle_update(update):
                 send_message(chat_id, "❌ Nazwa musi zawierać cyfry na końcu (np. b235)")
             return
 
-    # Normalna obsługa pojedynczego zdjęcia (poza trybem archiwizacji)
+    # Normalna obsługa pojedynczego zdjęcia
     if 'message' in update and 'photo' in update['message']:
         chat_id = update['message']['chat']['id']
         user_id = update['message']['from']['id']
@@ -739,55 +736,7 @@ def handle_update(update):
             if receipt_data:
                 saved = save_to_sheet(receipt_data)
                 
-                # Zwiększ licznik zdjęć dla autoryzacji
                 increment_photo_count(user_id, chat_id)
 
                 response = f"✅ Paragon rozpoznany!\n\n"
-                response += f"🏪 Dostawca: {receipt_data['supplier']}\n"
-                response += f"📅 Data: {receipt_data['date']}\n"
-                response += f"💰 Kwota: {receipt_data['amount']}\n"
-                response += f"💳 Płatność: {receipt_data['payment']}\n"
-                response += f"🧾 Nr paragonu: {receipt_data['bill_number']}\n"
-                response += f"📦 Expense: {receipt_data['expense_item']}\n"
-                response += f"📁 Kategoria: {receipt_data['category']}\n\n"
-
-                if saved:
-                    response += "📊 Zapisano do Google Sheets!"
-                else:
-                    response += "⚠️ Nie udało się zapisać do Sheets"
-
-                send_message(chat_id, response)
-            else:
-                send_message(chat_id, "😕 Nie udało się rozpoznać paragonu")
-
-            os.remove(filename)
-            return
-
-# ==================== SERWER HTTP ====================
-class Handler(BaseHTTPRequestHandler):
-    def do_POST(self):
-        content_len = int(self.headers.get('Content-Length', 0))
-        post_body = self.rfile.read(content_len)
-        try:
-            update = json.loads(post_body)
-            handle_update(update)
-        except Exception as e:
-            logging.exception(f"Błąd w POST: {e}")
-        finally:
-            self.send_response(200)
-            self.end_headers()
-
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Bot is running")
-
-def main():
-    port = int(os.environ.get('PORT', 10000))
-    server = HTTPServer(("0.0.0.0", port), Handler)
-    logging.info(f"🚀 Bot z Cohere AI, autoryzacją i trybem archiwizacji wystartował na porcie {port}")
-    logging.info(f"📊 Google Sheets ID: {SHEET_ID}")
-    server.serve_forever()
-
-if __name__ == "__main__":
-    main()
+                response += f"🏪 Dostawca: {receipt
