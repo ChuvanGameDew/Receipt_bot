@@ -711,6 +711,7 @@ def handle_update(update):
             return
 
     # Normalna obsługa pojedynczego zdjęcia
+       # Normalna obsługa pojedynczego zdjęcia
     if 'message' in update and 'photo' in update['message']:
         chat_id = update['message']['chat']['id']
         user_id = update['message']['from']['id']
@@ -739,4 +740,22 @@ def handle_update(update):
                 increment_photo_count(user_id, chat_id)
 
                 response = f"✅ Paragon rozpoznany!\n\n"
-                response += f"🏪 Dostawca: {receipt
+                response += f"🏪 Dostawca: {receipt_data['supplier']}\n"
+                response += f"📅 Data: {receipt_data['date']}\n"
+                response += f"💰 Kwota: {receipt_data['amount']}\n"
+                response += f"💳 Płatność: {receipt_data['payment']}\n"
+                response += f"🧾 Nr paragonu: {receipt_data['bill_number']}\n"
+                response += f"📦 Expense: {receipt_data['expense_item']}\n"
+                response += f"📁 Kategoria: {receipt_data['category']}\n\n"
+
+                if saved:
+                    response += "📊 Zapisano do Google Sheets!"
+                else:
+                    response += "⚠️ Nie udało się zapisać do Sheets"
+
+                send_message(chat_id, response)
+            else:
+                send_message(chat_id, "😕 Nie udało się rozpoznać paragonu")
+
+            os.remove(filename)
+            return
