@@ -6,6 +6,7 @@ import re
 import gspread
 import zipfile
 import io
+import asyncio
 from google.oauth2.service_account import Credentials
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import logging
@@ -28,7 +29,7 @@ API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}/"
 
 # ==================== GOOGLE SHEETS ====================
 SHEET_ID = "1SHUyo_5sJYsQPiIIR9nCkAeJI2ZB5KQFx-1g0jXKaRw"
-SHEET_NAME = "Arkusz1"  # Zmień na nazwę swojego arkusza
+SHEET_NAME = "Arkusz1"  # ZMIEŃ NA SWOJĄ NAZWĘ ARKUSZA!
 
 # ==================== SŁOWNIKI ====================
 known_suppliers = {
@@ -142,9 +143,9 @@ supplier_categories = {
 }
 
 # ==================== STAN UŻYTKOWNIKÓW ====================
-user_states = {}
-user_photos = defaultdict(list)
-user_analysis_results = defaultdict(list)
+user_states = {}  # przechowuje aktualny stan użytkownika
+user_photos = defaultdict(list)  # przechowuje ścieżki do plików tymczasowych
+user_analysis_results = defaultdict(list)  # przechowuje wyniki analizy dla każdego zdjęcia
 
 # ==================== FUNKCJE POMOCNICZE ====================
 def send_message(chat_id, text):
@@ -347,6 +348,9 @@ async def analyze_image_with_cohere(image_path, chat_id):
             logging.info(f"✅ Odpowiedź Cohere: {ai_response}")
 
             supplier = ai_response.get('firma', 'UNKNOWN')
+            if supplier == "UNKNOWN":
+                supplier = find_supplier("")  # fallback, ale raczej nie potrzebne
+
             date = format_date(ai_response.get('data', 'UNKNOWN'))
             amount = clean_amount(ai_response.get('kwota', 'UNKNOWN'))
             payment = normalize_payment(ai_response.get('platnosc', 'UNKNOWN'))
@@ -375,7 +379,7 @@ async def analyze_image_with_cohere(image_path, chat_id):
 # ==================== GŁÓWNA LOGIKA BOTA ====================
 def handle_start(chat_id):
     welcome_text = """
-🤖 <b>Receipt Scanner Bot v5.0</b>
+🤖 <b>Receipt Scanner Bot v5.1</b>
 
 📸 <b>Co potrafię:</b>
 • Rozpoznaję tekst z paragonów
@@ -420,20 +424,6 @@ def handle_update(update):
                     return
 
                 user_states[user_id] = 'ARCHIVE_DECISION'
-                # Generuj podgląd duplikatów (bez wysyłania)
-                fingerprints = {}
-                duplicate_info = []
-                for idx, data in enumerate(user_analysis_results[user_id], 1):
-                    fp = get_receipt_fingerprint(data)
-                    if fp in fingerprints:
-                        duplicate_info.append((idx, True, fingerprints[fp]))
-                    else:
-                        fingerprints[fp] = idx
-                        duplicate_info.append((idx, False, None))
-
-                # Zapamiętaj info o duplikatach
-                user_states[f"{user_id}_duplicates"] = duplicate_info
-
                 send_message(chat_id, "Czy chcesz zapisać te zdjęcia w archiwum ZIP?\n/tak – zapisz wszystko (podam nazwy)\n/nie – nie zapisuj, tylko dane trafią do tabeli")
             else:
                 send_message(chat_id, "❌ Najpierw wpisz /chuvan, żeby rozpocząć tryb archiwizacji.")
@@ -449,30 +439,18 @@ def handle_update(update):
 
         elif text == '/nie':
             if user_states.get(user_id) == 'ARCHIVE_DECISION':
-                # Wyślij podsumowanie
-                summary = "📊 PODSUMOWANIE PRZETWORZONYCH ZDJĘĆ:\n\n"
-                for idx, data in enumerate(user_analysis_results[user_id], 1):
-                    summary += f"[{idx}] "
-                    fp = get_receipt_fingerprint(data)
-                    if any(fp == get_receipt_fingerprint(d) and i != idx-1 for i, d in enumerate(user_analysis_results[user_id])):
-                        summary += "DUPLIKAT\n"
-                    else:
-                        summary += "unikalne\n"
-                    summary += f"    🏪 {data['supplier']} | 💰 {data['amount']} | 💳 {data['payment']} | 📅 {data['date']}\n\n"
-
-                summary += "✅ Wszystkie dane zapisane w tabeli!"
-                send_message(chat_id, summary)
-
-                # Zapisz wszystkie dane do tabeli
+                # Zapisz wszystkie dane do tabeli i wyślij podsumowanie
+                send_message(chat_id, f"⏳ Zapisuję {len(user_analysis_results[user_id])} zdjęć do tabeli...")
+                
                 for data in user_analysis_results[user_id]:
                     save_to_sheet(data)
-
+                
+                send_message(chat_id, f"✅ Zapisano {len(user_analysis_results[user_id])} wierszy w tabeli!")
+                
                 # Wyczyść stan
                 del user_states[user_id]
                 del user_photos[user_id]
                 del user_analysis_results[user_id]
-                if f"{user_id}_duplicates" in user_states:
-                    del user_states[f"{user_id}_duplicates"]
             else:
                 send_message(chat_id, "❌ Nie ma oczekującej archiwizacji.")
             return
@@ -496,13 +474,19 @@ def handle_update(update):
                 f.write(img_data)
 
             # Analizuj zdjęcie
-            send_message(chat_id, f"🔍 Analizuję zdjęcie {len(user_photos[user_id])+1}...")
-            receipt_data = asyncio.run(analyze_image_with_cohere(filename, chat_id))
+            current_count = len(user_photos[user_id]) + 1
+            send_message(chat_id, f"🔍 Analizuję zdjęcie {current_count}...")
+            
+            # Uruchom analizę asynchronicznie
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            receipt_data = loop.run_until_complete(analyze_image_with_cohere(filename, chat_id))
+            loop.close()
 
             if receipt_data:
                 user_analysis_results[user_id].append(receipt_data)
                 user_photos[user_id].append((filename, img_data))
-                send_message(chat_id, f"✅ Otrzymałem ({len(user_photos[user_id])})")
+                send_message(chat_id, f"✅ Otrzymałem ({current_count})")
             else:
                 send_message(chat_id, "⚠️ Nie udało się przeanalizować zdjęcia")
                 os.remove(filename)
@@ -516,31 +500,15 @@ def handle_update(update):
 
         if user_states.get(user_id) == 'ARCHIVE_ASK_NAME':
             base_name = text.strip()
+            
+            send_message(chat_id, f"⏳ Tworzę archiwum ZIP dla {len(user_photos[user_id])} zdjęć...")
 
             # Tworzenie archiwum ZIP
             zip_buffer = io.BytesIO()
             with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-                # Grupuj duplikaty
-                fingerprints = {}
-                name_counter = {}
                 for idx, (filename, img_data) in enumerate(user_photos[user_id]):
-                    data = user_analysis_results[user_id][idx]
-                    fp = get_receipt_fingerprint(data)
-
-                    if fp in fingerprints:
-                        # Duplikat – użyj tej samej nazwy z kropką
-                        base = fingerprints[fp]
-                        name_counter[base] = name_counter.get(base, 1) + 1
-                        arcname = f"{base}.{name_counter[base]}.jpg"
-                    else:
-                        # Unikalne – nowa nazwa z licznikiem
-                        counter = 1
-                        while f"{base_name}{counter}.jpg" in name_counter:
-                            counter += 1
-                        arcname = f"{base_name}{counter}.jpg"
-                        fingerprints[fp] = os.path.splitext(arcname)[0]
-                        name_counter[os.path.splitext(arcname)[0]] = 1
-
+                    # Nazwa pliku w ZIP: b4561.jpg, b4562.jpg, ...
+                    arcname = f"{base_name}{idx+1}.jpg"
                     zip_file.writestr(arcname, img_data)
 
             zip_buffer.seek(0)
@@ -549,35 +517,48 @@ def handle_update(update):
             files = {'document': ('archiwum.zip', zip_buffer.getvalue())}
             requests.post(API_URL + 'sendDocument', data={'chat_id': chat_id}, files=files)
 
-            # Wyślij podsumowanie
-            summary = "📊 PODSUMOWANIE PRZETWORZONYCH ZDJĘĆ:\n\n"
-            for idx, data in enumerate(user_analysis_results[user_id], 1):
-                summary += f"[{idx}] "
-                fp = get_receipt_fingerprint(data)
-                if any(fp == get_receipt_fingerprint(d) and i != idx-1 for i, d in enumerate(user_analysis_results[user_id])):
-                    summary += "DUPLIKAT\n"
-                else:
-                    summary += "unikalne\n"
-                summary += f"    🏪 {data['supplier']} | 💰 {data['amount']} | 💳 {data['payment']} | 📅 {data['date']}\n\n"
-
-            summary += "✅ Wszystkie dane zapisane w tabeli!"
-            send_message(chat_id, summary)
+            # Teraz wyślij każde zdjęcie po kolei z pełnym opisem
+            send_message(chat_id, f"📸 Wysyłam {len(user_analysis_results[user_id])} przeanalizowanych zdjęć:")
+            
+            for idx, (filename, img_data) in enumerate(user_photos[user_id]):
+                # Wyślij zdjęcie
+                with open(filename, 'rb') as f:
+                    files = {'photo': (f'zdjecie_{idx+1}.jpg', f, 'image/jpeg')}
+                    requests.post(API_URL + 'sendPhoto', data={'chat_id': chat_id}, files=files)
+                
+                # Wyślij opis
+                data = user_analysis_results[user_id][idx]
+                response = f"✅ Paragon rozpoznany!\n\n"
+                response += f"🏪 Dostawca: {data['supplier']}\n"
+                response += f"📅 Data: {data['date']}\n"
+                response += f"💰 Kwota: {data['amount']}\n"
+                response += f"💳 Płatność: {data['payment']}\n"
+                response += f"🧾 Nr paragonu: {base_name}{idx+1}\n"
+                response += f"📦 Expense: {data['expense_item']}\n"
+                response += f"📁 Kategoria: {data['category']}\n\n"
+                
+                send_message(chat_id, response)
 
             # Zapisz wszystkie dane do tabeli
+            send_message(chat_id, f"⏳ Zapisuję {len(user_analysis_results[user_id])} wierszy w Google Sheets...")
+            
+            saved_count = 0
             for data in user_analysis_results[user_id]:
-                save_to_sheet(data)
+                if save_to_sheet(data):
+                    saved_count += 1
+            
+            send_message(chat_id, f"✅ Zapisano {saved_count} z {len(user_analysis_results[user_id])} wierszy w tabeli!")
 
             # Wyczyść stan
             del user_states[user_id]
-            del user_photos[user_id]
-            del user_analysis_results[user_id]
-            if f"{user_id}_duplicates" in user_states:
-                del user_states[f"{user_id}_duplicates"]
-
+            
             # Usuń pliki tymczasowe
             for filename, _ in user_photos[user_id]:
                 if os.path.exists(filename):
                     os.remove(filename)
+            
+            del user_photos[user_id]
+            del user_analysis_results[user_id]
 
             return
 
@@ -599,7 +580,11 @@ def handle_update(update):
                 f.write(img_data)
 
             send_message(chat_id, "🔍 Analizuję paragon...")
-            receipt_data = asyncio.run(analyze_image_with_cohere(filename, chat_id))
+            
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            receipt_data = loop.run_until_complete(analyze_image_with_cohere(filename, chat_id))
+            loop.close()
 
             if receipt_data:
                 saved = save_to_sheet(receipt_data)
@@ -652,5 +637,4 @@ def main():
     server.serve_forever()
 
 if __name__ == "__main__":
-    import asyncio
     main()
