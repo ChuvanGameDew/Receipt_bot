@@ -4,11 +4,14 @@ import json
 import time
 import re
 import gspread
+import zipfile
+import io
 from google.oauth2.service_account import Credentials
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import logging
 import base64
 from datetime import datetime
+from collections import defaultdict
 
 # ==================== KONFIGURACJA LOGOWANIA ====================
 logging.basicConfig(
@@ -25,7 +28,7 @@ API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}/"
 
 # ==================== GOOGLE SHEETS ====================
 SHEET_ID = "1SHUyo_5sJYsQPiIIR9nCkAeJI2ZB5KQFx-1g0jXKaRw"
-SHEET_NAME = "Аркуш1"  # twoja nazwa arkusza
+SHEET_NAME = "Arkusz1"  # Zmień na nazwę swojego arkusza
 
 # ==================== SŁOWNIKI ====================
 known_suppliers = {
@@ -138,6 +141,11 @@ supplier_categories = {
     "ruads": "others"
 }
 
+# ==================== STAN UŻYTKOWNIKÓW ====================
+user_states = {}
+user_photos = defaultdict(list)
+user_analysis_results = defaultdict(list)
+
 # ==================== FUNKCJE POMOCNICZE ====================
 def send_message(chat_id, text):
     url = API_URL + "sendMessage"
@@ -149,47 +157,32 @@ def send_message(chat_id, text):
         logging.error(f"send_message error: {e}")
 
 def format_date(raw_date):
-    """Formatowanie daty - czyszczenie i konwersja do formatu DD/MM"""
     if not raw_date or raw_date == "UNKNOWN" or raw_date == "":
         return "UNKNOWN"
-    
-    # Usuń wszystkie znaki specjalne, zostaw tylko cyfry i ukośniki
     raw_date = re.sub(r'[^\d/]', '', raw_date)
-    
-    # Szukaj wzorca DD/MM lub DD/MM/YYYY
     match = re.search(r'(\d{1,2})/?(\d{1,2})', raw_date)
     if match:
         day = match.group(1).zfill(2)
         month = match.group(2).zfill(2)
-        # Sprawdź czy to poprawna data (dzień 1-31, miesiąc 1-12)
         if 1 <= int(day) <= 31 and 1 <= int(month) <= 12:
             return f"{day}/{month}"
-    
     return "UNKNOWN"
 
 def normalize_payment(payment_text):
-    """Normalizacja metody płatności"""
     if not payment_text or payment_text == "UNKNOWN":
         return "UNKNOWN"
-    
     payment_lower = payment_text.lower()
-    
-    # Słowa kluczowe dla płatności kartą
     card_keywords = ['card', 'credit', 'debit', 'visa', 'mastercard', 'karta', 'carta', 'carte']
     if any(kw in payment_lower for kw in card_keywords):
         return "card"
-    
-    # Słowa kluczowe dla płatności gotówką
     cash_keywords = ['cash', 'gotówka', 'gotowka', 'kontant', 'gotowizna']
     if any(kw in payment_lower for kw in cash_keywords):
         return "cash"
-    
     return "UNKNOWN"
 
 def clean_amount(raw_amount):
     if not raw_amount or raw_amount == "UNKNOWN":
         return "UNKNOWN"
-    
     cleaned = re.sub(r'[^\d.,]', '', raw_amount)
     cleaned = cleaned.replace('.', ',')
     if cleaned.count(',') > 1:
@@ -206,18 +199,11 @@ def find_supplier(text):
     return "UNKNOWN"
 
 def classify_receipt(supplier, amount_str, products=""):
-    """Klasyfikacja paragonu - zawsze zwraca tuple (expense_item, category)"""
     supplier_lower = supplier.lower()
-    
-    # Al Ansari Exchange - salary
     if 'ansari' in supplier_lower:
         return "salary", "salary"
-    
-    # Brothers Gas - gas
     if 'brothers gas' in supplier_lower:
         return "gas", "utilities"
-    
-    # Stacje paliw
     if any(x in supplier_lower for x in ['adnoc', 'enoc', 'emarat', 'eppco']):
         try:
             amount = float(amount_str.replace(',', '.'))
@@ -225,18 +211,12 @@ def classify_receipt(supplier, amount_str, products=""):
             return expense, "others"
         except:
             return "car fuel", "others"
-    
-    # Dostawcy opakowań
     if any(x in supplier_lower for x in ['hotpack', 'falconpack', 'falcon', 'pack']):
         return "packaging", "packaging"
-    
-    # Warsztaty
     if any(x in supplier_lower for x in ['sudhi', 'al ershad', 'al mumtaz', 'fahen']):
         if 'oil' in products.lower():
             return "bike oil", "others"
         return "maintenance", "maintenance"
-    
-    # Kategoria z słownika
     for key, category in supplier_categories.items():
         if key in supplier_lower:
             if category == "ingredients":
@@ -250,20 +230,20 @@ def classify_receipt(supplier, amount_str, products=""):
                     return "car fuel", "others"
             else:
                 return category, category
-    
-    # Domyślnie (zabezpieczenie przed None)
     return "ingredients", "ingredients"
+
+def get_receipt_fingerprint(receipt_data):
+    """Tworzy unikalny odcisk paragonu do wykrywania duplikatów"""
+    return f"{receipt_data.get('supplier', '')}|{receipt_data.get('amount', '')}|{receipt_data.get('payment', '')}|{receipt_data.get('date', '')}"
 
 # ==================== FUNKCJE GOOGLE SHEETS ====================
 def get_google_sheet():
     logging.info("=== PRÓBA POŁĄCZENIA Z GOOGLE SHEETS ===")
-    
     possible_paths = [
         '/etc/secrets/google-credentials.json',
         'google-credentials.json',
         os.path.join(os.getcwd(), 'google-credentials.json')
     ]
-    
     creds_path = None
     for path in possible_paths:
         if os.path.exists(path):
@@ -271,26 +251,20 @@ def get_google_sheet():
             logging.info(f"✅ Znaleziono plik credentials: {path}")
             logging.info(f"   Rozmiar pliku: {os.path.getsize(path)} bajtów")
             break
-    
     if not creds_path:
         logging.error("❌ NIE ZNALEZIONO pliku credentials!")
         return None
-
     try:
         scope = ["https://www.googleapis.com/auth/spreadsheets"]
         creds = Credentials.from_service_account_file(creds_path, scopes=scope)
         logging.info("✅ Credentials wczytane pomyślnie")
-        
         client = gspread.authorize(creds)
         logging.info("✅ Autoryzacja gspread OK")
-        
         sheet = client.open_by_key(SHEET_ID)
         logging.info(f"✅ Tabela otwarta, tytuł: {sheet.title}")
-        
         worksheet = sheet.worksheet(SHEET_NAME)
         logging.info(f"✅ Arkusz otwarty, nazwa: {SHEET_NAME}")
         return worksheet
-        
     except Exception as e:
         logging.error(f"❌ BŁĄD połączenia: {str(e)}")
         logging.error(f"   Typ błędu: {type(e).__name__}")
@@ -303,13 +277,11 @@ def clean_value(value):
 
 def save_to_sheet(data):
     logging.info("=== PRÓBA ZAPISU DO GOOGLE SHEETS ===")
-    
     try:
         sheet = get_google_sheet()
         if not sheet:
             logging.error("❌ Nie można uzyskać dostępu do arkusza")
             return False
-        
         row = [
             '',                                      # Kolumna A - pusta
             clean_value(data.get('date', '')),       # Kolumna B - data
@@ -321,88 +293,22 @@ def save_to_sheet(data):
             '',                                      # Kolumna H - pusta
             clean_value(data.get('amount', ''))      # Kolumna I - kwota
         ]
-        
         logging.info(f"   Próba zapisu wiersza: {row}")
         sheet.append_row(row)
         logging.info(f"✅ Zapisano do Google Sheets")
         return True
-        
     except Exception as e:
         logging.error(f"❌ Błąd zapisu: {str(e)}")
         return False
 
-# ==================== GŁÓWNA LOGIKA BOTA ====================
-def handle_start(chat_id):
-    welcome_text = """
-🤖 <b>Receipt Scanner Bot v4.0</b>
-
-📸 <b>Co potrafię:</b>
-• Rozpoznaję tekst z paragonów
-• Klasyfikuję dostawców
-• Rozróżniam metody płatności
-• Zapisuję dane do Google Sheets
-
-📋 <b>Jak używać:</b>
-1. Wyślij mi zdjęcie paragonu
-2. AI przeanalizuje obraz
-3. Otrzymasz podsumowanie
-4. Dane trafią do tabeli
-"""
-    send_message(chat_id, welcome_text)
-
-# Zbiór przetworzonych już ID, żeby nie analizować wielokrotnie
-processed_updates = set()
-
-def handle_update(update):
-    global processed_updates
-    
-    logging.info("=== NOWA WIADOMOŚĆ ===")
-    
-    # Zapobieganie wielokrotnemu przetwarzaniu
-    update_id = update.get('update_id')
-    if update_id in processed_updates:
-        logging.info(f"Pominięto już przetworzone update_id: {update_id}")
-        return
-    processed_updates.add(update_id)
-    
-    # Ograniczenie wielkości zbioru
-    if len(processed_updates) > 100:
-        processed_updates = set(list(processed_updates)[-50:])
-    
-    # Obsługa komendy /start
-    if 'message' in update and 'text' in update['message']:
-        if update['message']['text'] == '/start':
-            chat_id = update['message']['chat']['id']
-            handle_start(chat_id)
-            return
-    
-    # Sprawdzenie czy to zdjęcie
-    if 'message' not in update or 'photo' not in update['message']:
-        return
-
-    chat_id = update['message']['chat']['id']
-    send_message(chat_id, "🔍 Analizuję paragon...")
-
+# ==================== ANALIZA ZDJĘCIA PRZEZ COHERE ====================
+async def analyze_image_with_cohere(image_path, chat_id):
+    """Analizuje pojedyncze zdjęcie i zwraca dane paragonu"""
     try:
-        # Pobranie i zapis zdjęcia
-        file_id = update['message']['photo'][-1]['file_id']
-        file_info = requests.get(API_URL + f"getFile?file_id={file_id}", timeout=10).json()
-        file_path = file_info['result']['file_path']
-        file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
-        
-        img_data = requests.get(file_url, timeout=30).content
-        with open("receipt.jpg", "wb") as f:
-            f.write(img_data)
-        logging.info(f"📸 Pobrano zdjęcie: {len(img_data)} bajtów")
-
-        # Kodowanie do base64
-        with open("receipt.jpg", "rb") as f:
+        with open(image_path, "rb") as f:
             base64_image = base64.b64encode(f.read()).decode("utf-8")
 
-        # ===== COHERE AI =====
         url = "https://api.cohere.ai/compatibility/v1/chat/completions"
-        
-        # Prompt dla Cohere
         prompt = """Z tego paragonu wyciągnij następujące informacje:
         1. Nazwa firmy/sklepu (np. Carrefour, ADNOC, AL KHALDIYA)
         2. Data w formacie DD/MM/YYYY
@@ -418,9 +324,8 @@ def handle_update(update):
             "platnosc": "card lub cash",
             "numer": "numer paragonu"
         }
-
         Jeśli nie znajdziesz jakiegoś elementu, wpisz "UNKNOWN"."""
-        
+
         payload = {
             "model": COHERE_MODEL,
             "messages": [{
@@ -432,118 +337,293 @@ def handle_update(update):
             }],
             "response_format": {"type": "json_object"}
         }
-        
-        headers = {
-            "Authorization": f"Bearer {COHERE_API_KEY}",
-            "Content-Type": "application/json"
-        }
 
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                logging.info(f"📤 Próba {attempt + 1}/{max_retries} do Cohere AI...")
-                r = requests.post(url, json=payload, headers=headers, timeout=60)
-                
-                if r.status_code == 200:
-                    result = r.json()
-                    ai_response = json.loads(result['choices'][0]['message']['content'])
-                    logging.info(f"✅ Odpowiedź Cohere: {ai_response}")
-                    
-                    # ===== WYODRĘBNIANIE DANYCH =====
-                    supplier = ai_response.get('firma', 'UNKNOWN')
-                    if supplier == "UNKNOWN":
-                        supplier = find_supplier(" ".join([block["block_content"] for block in all_text])) if 'all_text' in locals() else "UNKNOWN"
-                    
-                    # Data - formatowanie
-                    date = ai_response.get('data', 'UNKNOWN')
-                    date = format_date(date)
-                    
-                    # Kwota
-                    amount = ai_response.get('kwota', 'UNKNOWN')
-                    amount = clean_amount(amount)
-                    
-                    # Płatność
-                    payment = ai_response.get('platnosc', 'UNKNOWN')
-                    payment = normalize_payment(payment)
-                    
-                    # Numer paragonu
-                    bill_number = ai_response.get('numer', 'UNKNOWN')
-                    if bill_number == "UNKNOWN" or not bill_number:
-                        bill_number = os.path.splitext(os.path.basename(file_path))[0]
-                    
-                    # Produkty (puste, bo Cohere nie zwraca produktów)
-                    products_text_full = ""
-                    
-                    # Klasyfikacja - z zabezpieczeniem
-                    try:
-                        expense_item, category = classify_receipt(supplier, amount, products_text_full)
-                        logging.info(f"Klasyfikacja: {expense_item}, {category}")
-                    except Exception as e:
-                        expense_item, category = "ingredients", "ingredients"
-                        logging.warning(f"Błąd klasyfikacji dla {supplier}: {e}, używam domyślnych")
-                    
-                    # ===== PRZYGOTOWANIE DANYCH =====
-                    receipt_data = {
-                        'supplier': supplier,
-                        'date': date,
-                        'amount': amount,
-                        'payment': payment,
-                        'bill_number': bill_number,
-                        'expense_item': expense_item,
-                        'category': category
-                    }
-                    
-                    # ===== ZAPIS DO GOOGLE SHEETS =====
-                    saved = save_to_sheet(receipt_data)
-                    
-                    # ===== ODPOWIEDŹ DLA UŻYTKOWNIKA =====
-                    response = f"✅ Paragon rozpoznany!\n\n"
-                    response += f"🏪 Dostawca: {supplier}\n"
-                    response += f"📅 Data: {date}\n"
-                    response += f"💰 Kwota: {amount}\n"
-                    response += f"💳 Płatność: {payment}\n"
-                    response += f"🧾 Nr paragonu: {bill_number}\n"
-                    response += f"📦 Expense: {expense_item}\n"
-                    response += f"📁 Kategoria: {category}\n\n"
-                    
-                    if saved:
-                        response += "📊 Zapisano do Google Sheets!"
-                    else:
-                        response += "⚠️ Nie udało się zapisać do Sheets"
-                    
-                    send_message(chat_id, response)
-                    logging.info(f"✅ Rozpoznano: {supplier}, {date}, {amount}, {payment}")
-                    break
-                    
-                elif r.status_code == 429 and attempt < max_retries - 1:
-                    time.sleep(5)
-                    continue
-                else:
-                    send_message(chat_id, f"⚠️ Błąd Cohere: {r.status_code}")
-                    break
-                    
-            except requests.exceptions.Timeout:
-                if attempt < max_retries - 1:
-                    time.sleep(5)
-                    continue
-                else:
-                    send_message(chat_id, "⏱ Timeout. Spróbuj później.")
-            except json.JSONDecodeError as e:
-                logging.error(f"Błąd parsowania JSON: {e}")
-                send_message(chat_id, "⚠️ Błąd formatu odpowiedzi AI")
-                break
-            except Exception as e:
-                logging.exception(f"Błąd: {e}")
-                if attempt == max_retries - 1:
-                    send_message(chat_id, f"⚠️ Błąd: {str(e)[:100]}")
+        headers = {"Authorization": f"Bearer {COHERE_API_KEY}", "Content-Type": "application/json"}
+        r = requests.post(url, json=payload, headers=headers, timeout=60)
 
+        if r.status_code == 200:
+            result = r.json()
+            ai_response = json.loads(result['choices'][0]['message']['content'])
+            logging.info(f"✅ Odpowiedź Cohere: {ai_response}")
+
+            supplier = ai_response.get('firma', 'UNKNOWN')
+            date = format_date(ai_response.get('data', 'UNKNOWN'))
+            amount = clean_amount(ai_response.get('kwota', 'UNKNOWN'))
+            payment = normalize_payment(ai_response.get('platnosc', 'UNKNOWN'))
+            bill_number = ai_response.get('numer', 'UNKNOWN')
+            if bill_number == "UNKNOWN" or not bill_number:
+                bill_number = os.path.splitext(os.path.basename(image_path))[0]
+
+            expense_item, category = classify_receipt(supplier, amount, "")
+
+            return {
+                'supplier': supplier,
+                'date': date,
+                'amount': amount,
+                'payment': payment,
+                'bill_number': bill_number,
+                'expense_item': expense_item,
+                'category': category
+            }
+        else:
+            logging.error(f"Błąd Cohere: {r.status_code}")
+            return None
     except Exception as e:
-        logging.exception(f"Błąd główny: {e}")
-        send_message(chat_id, f"⚠️ Błąd: {str(e)[:100]}")
-    finally:
-        if os.path.exists("receipt.jpg"):
-            os.remove("receipt.jpg")
-            logging.info("🧹 Usunięto plik tymczasowy")
+        logging.exception(f"Błąd analizy obrazu: {e}")
+        return None
+
+# ==================== GŁÓWNA LOGIKA BOTA ====================
+def handle_start(chat_id):
+    welcome_text = """
+🤖 <b>Receipt Scanner Bot v5.0</b>
+
+📸 <b>Co potrafię:</b>
+• Rozpoznaję tekst z paragonów
+• Klasyfikuję dostawców
+• Rozróżniam metody płatności
+• Zapisuję dane do Google Sheets
+• Tryb archiwizacji /chuvan
+
+📋 <b>Jak używać:</b>
+1. Wyślij mi zdjęcie paragonu
+2. AI przeanalizuje obraz
+3. Otrzymasz podsumowanie
+4. Dane trafią do tabeli
+"""
+    send_message(chat_id, welcome_text)
+
+# Główna funkcja obsługująca aktualizacje
+def handle_update(update):
+    logging.info("=== NOWA WIADOMOŚĆ ===")
+
+    # Obsługa komendy /start
+    if 'message' in update and 'text' in update['message']:
+        text = update['message']['text']
+        chat_id = update['message']['chat']['id']
+        user_id = update['message']['from']['id']
+
+        if text == '/start':
+            handle_start(chat_id)
+            return
+
+        elif text == '/chuvan':
+            user_states[user_id] = 'ARCHIVE_COLLECT'
+            user_photos[user_id] = []
+            user_analysis_results[user_id] = []
+            send_message(chat_id, "🗂️ Tryb archiwizacji aktywowany. Wysyłaj zdjęcia – najpierw je przeanalizuję.\nGdy skończysz wysyłać, napisz /archiwum.")
+            return
+
+        elif text == '/archiwum':
+            if user_states.get(user_id) == 'ARCHIVE_COLLECT':
+                if not user_photos[user_id]:
+                    send_message(chat_id, "❌ Nie wysłałeś żadnych zdjęć do archiwizacji.")
+                    return
+
+                user_states[user_id] = 'ARCHIVE_DECISION'
+                # Generuj podgląd duplikatów (bez wysyłania)
+                fingerprints = {}
+                duplicate_info = []
+                for idx, data in enumerate(user_analysis_results[user_id], 1):
+                    fp = get_receipt_fingerprint(data)
+                    if fp in fingerprints:
+                        duplicate_info.append((idx, True, fingerprints[fp]))
+                    else:
+                        fingerprints[fp] = idx
+                        duplicate_info.append((idx, False, None))
+
+                # Zapamiętaj info o duplikatach
+                user_states[f"{user_id}_duplicates"] = duplicate_info
+
+                send_message(chat_id, "Czy chcesz zapisać te zdjęcia w archiwum ZIP?\n/tak – zapisz wszystko (podam nazwy)\n/nie – nie zapisuj, tylko dane trafią do tabeli")
+            else:
+                send_message(chat_id, "❌ Najpierw wpisz /chuvan, żeby rozpocząć tryb archiwizacji.")
+            return
+
+        elif text == '/tak':
+            if user_states.get(user_id) == 'ARCHIVE_DECISION':
+                user_states[user_id] = 'ARCHIVE_ASK_NAME'
+                send_message(chat_id, "Podaj nazwę początkową (np. b235):")
+            else:
+                send_message(chat_id, "❌ Nie ma oczekującej archiwizacji.")
+            return
+
+        elif text == '/nie':
+            if user_states.get(user_id) == 'ARCHIVE_DECISION':
+                # Wyślij podsumowanie
+                summary = "📊 PODSUMOWANIE PRZETWORZONYCH ZDJĘĆ:\n\n"
+                for idx, data in enumerate(user_analysis_results[user_id], 1):
+                    summary += f"[{idx}] "
+                    fp = get_receipt_fingerprint(data)
+                    if any(fp == get_receipt_fingerprint(d) and i != idx-1 for i, d in enumerate(user_analysis_results[user_id])):
+                        summary += "DUPLIKAT\n"
+                    else:
+                        summary += "unikalne\n"
+                    summary += f"    🏪 {data['supplier']} | 💰 {data['amount']} | 💳 {data['payment']} | 📅 {data['date']}\n\n"
+
+                summary += "✅ Wszystkie dane zapisane w tabeli!"
+                send_message(chat_id, summary)
+
+                # Zapisz wszystkie dane do tabeli
+                for data in user_analysis_results[user_id]:
+                    save_to_sheet(data)
+
+                # Wyczyść stan
+                del user_states[user_id]
+                del user_photos[user_id]
+                del user_analysis_results[user_id]
+                if f"{user_id}_duplicates" in user_states:
+                    del user_states[f"{user_id}_duplicates"]
+            else:
+                send_message(chat_id, "❌ Nie ma oczekującej archiwizacji.")
+            return
+
+    # Obsługa zdjęć
+    if 'message' in update and 'photo' in update['message']:
+        chat_id = update['message']['chat']['id']
+        user_id = update['message']['from']['id']
+
+        # Jeśli jesteśmy w trybie archiwizacji
+        if user_states.get(user_id) == 'ARCHIVE_COLLECT':
+            # Pobierz i zapisz zdjęcie
+            file_id = update['message']['photo'][-1]['file_id']
+            file_info = requests.get(API_URL + f"getFile?file_id={file_id}", timeout=10).json()
+            file_path = file_info['result']['file_path']
+            file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+
+            img_data = requests.get(file_url, timeout=30).content
+            filename = f"temp_{file_id}.jpg"
+            with open(filename, "wb") as f:
+                f.write(img_data)
+
+            # Analizuj zdjęcie
+            send_message(chat_id, f"🔍 Analizuję zdjęcie {len(user_photos[user_id])+1}...")
+            receipt_data = asyncio.run(analyze_image_with_cohere(filename, chat_id))
+
+            if receipt_data:
+                user_analysis_results[user_id].append(receipt_data)
+                user_photos[user_id].append((filename, img_data))
+                send_message(chat_id, f"✅ Otrzymałem ({len(user_photos[user_id])})")
+            else:
+                send_message(chat_id, "⚠️ Nie udało się przeanalizować zdjęcia")
+                os.remove(filename)
+            return
+
+    # Obsługa odpowiedzi z nazwą początkową
+    if 'message' in update and 'text' in update['message']:
+        text = update['message']['text']
+        chat_id = update['message']['chat']['id']
+        user_id = update['message']['from']['id']
+
+        if user_states.get(user_id) == 'ARCHIVE_ASK_NAME':
+            base_name = text.strip()
+
+            # Tworzenie archiwum ZIP
+            zip_buffer = io.BytesIO()
+            with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+                # Grupuj duplikaty
+                fingerprints = {}
+                name_counter = {}
+                for idx, (filename, img_data) in enumerate(user_photos[user_id]):
+                    data = user_analysis_results[user_id][idx]
+                    fp = get_receipt_fingerprint(data)
+
+                    if fp in fingerprints:
+                        # Duplikat – użyj tej samej nazwy z kropką
+                        base = fingerprints[fp]
+                        name_counter[base] = name_counter.get(base, 1) + 1
+                        arcname = f"{base}.{name_counter[base]}.jpg"
+                    else:
+                        # Unikalne – nowa nazwa z licznikiem
+                        counter = 1
+                        while f"{base_name}{counter}.jpg" in name_counter:
+                            counter += 1
+                        arcname = f"{base_name}{counter}.jpg"
+                        fingerprints[fp] = os.path.splitext(arcname)[0]
+                        name_counter[os.path.splitext(arcname)[0]] = 1
+
+                    zip_file.writestr(arcname, img_data)
+
+            zip_buffer.seek(0)
+
+            # Wyślij ZIP
+            files = {'document': ('archiwum.zip', zip_buffer.getvalue())}
+            requests.post(API_URL + 'sendDocument', data={'chat_id': chat_id}, files=files)
+
+            # Wyślij podsumowanie
+            summary = "📊 PODSUMOWANIE PRZETWORZONYCH ZDJĘĆ:\n\n"
+            for idx, data in enumerate(user_analysis_results[user_id], 1):
+                summary += f"[{idx}] "
+                fp = get_receipt_fingerprint(data)
+                if any(fp == get_receipt_fingerprint(d) and i != idx-1 for i, d in enumerate(user_analysis_results[user_id])):
+                    summary += "DUPLIKAT\n"
+                else:
+                    summary += "unikalne\n"
+                summary += f"    🏪 {data['supplier']} | 💰 {data['amount']} | 💳 {data['payment']} | 📅 {data['date']}\n\n"
+
+            summary += "✅ Wszystkie dane zapisane w tabeli!"
+            send_message(chat_id, summary)
+
+            # Zapisz wszystkie dane do tabeli
+            for data in user_analysis_results[user_id]:
+                save_to_sheet(data)
+
+            # Wyczyść stan
+            del user_states[user_id]
+            del user_photos[user_id]
+            del user_analysis_results[user_id]
+            if f"{user_id}_duplicates" in user_states:
+                del user_states[f"{user_id}_duplicates"]
+
+            # Usuń pliki tymczasowe
+            for filename, _ in user_photos[user_id]:
+                if os.path.exists(filename):
+                    os.remove(filename)
+
+            return
+
+    # Normalna obsługa pojedynczego zdjęcia (poza trybem archiwizacji)
+    if 'message' in update and 'photo' in update['message']:
+        chat_id = update['message']['chat']['id']
+        user_id = update['message']['from']['id']
+
+        # Jeśli użytkownik nie jest w trybie archiwizacji
+        if user_id not in user_states:
+            file_id = update['message']['photo'][-1]['file_id']
+            file_info = requests.get(API_URL + f"getFile?file_id={file_id}", timeout=10).json()
+            file_path = file_info['result']['file_path']
+            file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+
+            img_data = requests.get(file_url, timeout=30).content
+            filename = f"temp_{file_id}.jpg"
+            with open(filename, "wb") as f:
+                f.write(img_data)
+
+            send_message(chat_id, "🔍 Analizuję paragon...")
+            receipt_data = asyncio.run(analyze_image_with_cohere(filename, chat_id))
+
+            if receipt_data:
+                saved = save_to_sheet(receipt_data)
+
+                response = f"✅ Paragon rozpoznany!\n\n"
+                response += f"🏪 Dostawca: {receipt_data['supplier']}\n"
+                response += f"📅 Data: {receipt_data['date']}\n"
+                response += f"💰 Kwota: {receipt_data['amount']}\n"
+                response += f"💳 Płatność: {receipt_data['payment']}\n"
+                response += f"🧾 Nr paragonu: {receipt_data['bill_number']}\n"
+                response += f"📦 Expense: {receipt_data['expense_item']}\n"
+                response += f"📁 Kategoria: {receipt_data['category']}\n\n"
+
+                if saved:
+                    response += "📊 Zapisano do Google Sheets!"
+                else:
+                    response += "⚠️ Nie udało się zapisać do Sheets"
+
+                send_message(chat_id, response)
+            else:
+                send_message(chat_id, "😕 Nie udało się rozpoznać paragonu")
+
+            os.remove(filename)
+            return
 
 # ==================== SERWER HTTP ====================
 class Handler(BaseHTTPRequestHandler):
@@ -567,9 +647,10 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     port = int(os.environ.get('PORT', 10000))
     server = HTTPServer(("0.0.0.0", port), Handler)
-    logging.info(f"🚀 Bot z Cohere AI wystartował na porcie {port}")
+    logging.info(f"🚀 Bot z Cohere AI i trybem archiwizacji wystartował na porcie {port}")
     logging.info(f"📊 Google Sheets ID: {SHEET_ID}")
     server.serve_forever()
 
 if __name__ == "__main__":
+    import asyncio
     main()
