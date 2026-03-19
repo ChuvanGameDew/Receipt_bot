@@ -440,6 +440,7 @@ def handle_update(update):
                 
                 send_message(chat_id, f"✅ Zapisano {len(user_analysis_results[user_id])} wierszy w tabeli!")
                 
+                # Wyczyść stan
                 del user_states[user_id]
                 del user_photos[user_id]
                 del user_analysis_results[user_id]
@@ -447,6 +448,7 @@ def handle_update(update):
                 send_message(chat_id, "❌ Nie ma oczekującej archiwizacji.")
             return
 
+    # Obsługa zdjęć w trybie archiwizacji
     if 'message' in update and 'photo' in update['message']:
         chat_id = update['message']['chat']['id']
         user_id = update['message']['from']['id']
@@ -465,6 +467,7 @@ def handle_update(update):
             current_count = len(user_photos[user_id]) + 1
             send_message(chat_id, f"🔍 Analizuję zdjęcie {current_count}...")
             
+            # Analiza zdjęcia
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             receipt_data = loop.run_until_complete(analyze_image_with_cohere(filename, chat_id))
@@ -479,6 +482,7 @@ def handle_update(update):
                 os.remove(filename)
             return
 
+    # Obsługa odpowiedzi z nazwą początkową (ARCHIVE_ASK_NAME)
     if 'message' in update and 'text' in update['message']:
         text = update['message']['text']
         chat_id = update['message']['chat']['id']
@@ -532,19 +536,23 @@ def handle_update(update):
                     
                     send_message(chat_id, response)
 
-                # Zapisz wszystkie dane do tabeli
+                # Zapisz wszystkie dane do tabeli z poprawnymi numerami
                 send_message(chat_id, f"⏳ Zapisuję {len(user_analysis_results[user_id])} wierszy w Google Sheets...")
-                
+
                 saved_count = 0
-                for data in user_analysis_results[user_id]:
+                for idx, data in enumerate(user_analysis_results[user_id]):
+                    current_number = start_num + idx
+                    # Nadpisz numer paragonu tym, co jest w nazwie pliku
+                    data['bill_number'] = f"{prefix}{current_number}"
                     if save_to_sheet(data):
                         saved_count += 1
-                
+
                 send_message(chat_id, f"✅ Zapisano {saved_count} z {len(user_analysis_results[user_id])} wierszy w tabeli!")
 
-                # Wyczyść stan i usuń pliki
+                # Wyczyść stan
                 del user_states[user_id]
                 
+                # Usuń pliki tymczasowe
                 for filename, _ in user_photos[user_id]:
                     if os.path.exists(filename):
                         os.remove(filename)
@@ -555,6 +563,7 @@ def handle_update(update):
                 send_message(chat_id, "❌ Nazwa musi zawierać cyfry na końcu (np. b235)")
             return
 
+    # Normalna obsługa pojedynczego zdjęcia (poza trybem archiwizacji)
     if 'message' in update and 'photo' in update['message']:
         chat_id = update['message']['chat']['id']
         user_id = update['message']['from']['id']
