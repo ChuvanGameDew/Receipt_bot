@@ -29,7 +29,8 @@ API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}/"
 
 # ==================== GOOGLE SHEETS ====================
 SHEET_ID = "1SHUyo_5sJYsQPiIIR9nCkAeJI2ZB5KQFx-1g0jXKaRw"
-SHEET_NAME = "Arkusz1"  # ZMIEŃ NA SWOJĄ NAZWĘ ARKUSZA!
+# !!! WAŻNE: Zmień na dokładną nazwę swojego arkusza (sprawdź na dole tabeli) !!!
+SHEET_NAME = "Аркуш1"  # np. "Arkusz1", "Sheet1", "Лист1"
 
 # ==================== SŁOWNIKI ====================
 known_suppliers = {
@@ -143,9 +144,9 @@ supplier_categories = {
 }
 
 # ==================== STAN UŻYTKOWNIKÓW ====================
-user_states = {}  # przechowuje aktualny stan użytkownika
-user_photos = defaultdict(list)  # przechowuje ścieżki do plików tymczasowych
-user_analysis_results = defaultdict(list)  # przechowuje wyniki analizy dla każdego zdjęcia
+user_states = {}
+user_photos = defaultdict(list)
+user_analysis_results = defaultdict(list)
 
 # ==================== FUNKCJE POMOCNICZE ====================
 def send_message(chat_id, text):
@@ -234,7 +235,6 @@ def classify_receipt(supplier, amount_str, products=""):
     return "ingredients", "ingredients"
 
 def get_receipt_fingerprint(receipt_data):
-    """Tworzy unikalny odcisk paragonu do wykrywania duplikatów"""
     return f"{receipt_data.get('supplier', '')}|{receipt_data.get('amount', '')}|{receipt_data.get('payment', '')}|{receipt_data.get('date', '')}"
 
 # ==================== FUNKCJE GOOGLE SHEETS ====================
@@ -304,7 +304,6 @@ def save_to_sheet(data):
 
 # ==================== ANALIZA ZDJĘCIA PRZEZ COHERE ====================
 async def analyze_image_with_cohere(image_path, chat_id):
-    """Analizuje pojedyncze zdjęcie i zwraca dane paragonu"""
     try:
         with open(image_path, "rb") as f:
             base64_image = base64.b64encode(f.read()).decode("utf-8")
@@ -348,9 +347,6 @@ async def analyze_image_with_cohere(image_path, chat_id):
             logging.info(f"✅ Odpowiedź Cohere: {ai_response}")
 
             supplier = ai_response.get('firma', 'UNKNOWN')
-            if supplier == "UNKNOWN":
-                supplier = find_supplier("")  # fallback, ale raczej nie potrzebne
-
             date = format_date(ai_response.get('data', 'UNKNOWN'))
             amount = clean_amount(ai_response.get('kwota', 'UNKNOWN'))
             payment = normalize_payment(ai_response.get('platnosc', 'UNKNOWN'))
@@ -379,7 +375,7 @@ async def analyze_image_with_cohere(image_path, chat_id):
 # ==================== GŁÓWNA LOGIKA BOTA ====================
 def handle_start(chat_id):
     welcome_text = """
-🤖 <b>Receipt Scanner Bot v5.1</b>
+🤖 <b>Receipt Scanner Bot v5.2</b>
 
 📸 <b>Co potrafię:</b>
 • Rozpoznaję tekst z paragonów
@@ -396,11 +392,9 @@ def handle_start(chat_id):
 """
     send_message(chat_id, welcome_text)
 
-# Główna funkcja obsługująca aktualizacje
 def handle_update(update):
     logging.info("=== NOWA WIADOMOŚĆ ===")
 
-    # Obsługa komendy /start
     if 'message' in update and 'text' in update['message']:
         text = update['message']['text']
         chat_id = update['message']['chat']['id']
@@ -439,7 +433,6 @@ def handle_update(update):
 
         elif text == '/nie':
             if user_states.get(user_id) == 'ARCHIVE_DECISION':
-                # Zapisz wszystkie dane do tabeli i wyślij podsumowanie
                 send_message(chat_id, f"⏳ Zapisuję {len(user_analysis_results[user_id])} zdjęć do tabeli...")
                 
                 for data in user_analysis_results[user_id]:
@@ -447,7 +440,6 @@ def handle_update(update):
                 
                 send_message(chat_id, f"✅ Zapisano {len(user_analysis_results[user_id])} wierszy w tabeli!")
                 
-                # Wyczyść stan
                 del user_states[user_id]
                 del user_photos[user_id]
                 del user_analysis_results[user_id]
@@ -455,14 +447,11 @@ def handle_update(update):
                 send_message(chat_id, "❌ Nie ma oczekującej archiwizacji.")
             return
 
-    # Obsługa zdjęć
     if 'message' in update and 'photo' in update['message']:
         chat_id = update['message']['chat']['id']
         user_id = update['message']['from']['id']
 
-        # Jeśli jesteśmy w trybie archiwizacji
         if user_states.get(user_id) == 'ARCHIVE_COLLECT':
-            # Pobierz i zapisz zdjęcie
             file_id = update['message']['photo'][-1]['file_id']
             file_info = requests.get(API_URL + f"getFile?file_id={file_id}", timeout=10).json()
             file_path = file_info['result']['file_path']
@@ -473,11 +462,9 @@ def handle_update(update):
             with open(filename, "wb") as f:
                 f.write(img_data)
 
-            # Analizuj zdjęcie
             current_count = len(user_photos[user_id]) + 1
             send_message(chat_id, f"🔍 Analizuję zdjęcie {current_count}...")
             
-            # Uruchom analizę asynchronicznie
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             receipt_data = loop.run_until_complete(analyze_image_with_cohere(filename, chat_id))
@@ -492,7 +479,6 @@ def handle_update(update):
                 os.remove(filename)
             return
 
-    # Obsługa odpowiedzi z nazwą początkową
     if 'message' in update and 'text' in update['message']:
         text = update['message']['text']
         chat_id = update['message']['chat']['id']
@@ -503,71 +489,76 @@ def handle_update(update):
             
             send_message(chat_id, f"⏳ Tworzę archiwum ZIP dla {len(user_photos[user_id])} zdjęć...")
 
-            # Tworzenie archiwum ZIP
-            zip_buffer = io.BytesIO()
-            with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            # Wyodrębnij numer początkowy z nazwy (np. z "b235" weźmie 235)
+            match = re.search(r'(\d+)$', base_name)
+            if match:
+                start_num = int(match.group(1))
+                prefix = base_name[:match.start()]
+                
+                # Tworzenie archiwum ZIP
+                zip_buffer = io.BytesIO()
+                with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+                    for idx, (filename, img_data) in enumerate(user_photos[user_id]):
+                        current_number = start_num + idx
+                        arcname = f"{prefix}{current_number}.jpg"
+                        zip_file.writestr(arcname, img_data)
+                
+                zip_buffer.seek(0)
+
+                # Wyślij ZIP
+                files = {'document': ('archiwum.zip', zip_buffer.getvalue())}
+                requests.post(API_URL + 'sendDocument', data={'chat_id': chat_id}, files=files)
+
+                # Wyślij każde zdjęcie po kolei z opisem
+                send_message(chat_id, f"📸 Wysyłam {len(user_analysis_results[user_id])} przeanalizowanych zdjęć:")
+                
                 for idx, (filename, img_data) in enumerate(user_photos[user_id]):
-                    # Nazwa pliku w ZIP: b4561.jpg, b4562.jpg, ...
-                    arcname = f"{base_name}{idx+1}.jpg"
-                    zip_file.writestr(arcname, img_data)
+                    # Wyślij zdjęcie
+                    with open(filename, 'rb') as f:
+                        files = {'photo': (f'zdjecie_{idx+1}.jpg', f, 'image/jpeg')}
+                        requests.post(API_URL + 'sendPhoto', data={'chat_id': chat_id}, files=files)
+                    
+                    # Wyślij opis
+                    data = user_analysis_results[user_id][idx]
+                    current_number = start_num + idx
+                    response = f"✅ Paragon rozpoznany!\n\n"
+                    response += f"🏪 Dostawca: {data['supplier']}\n"
+                    response += f"📅 Data: {data['date']}\n"
+                    response += f"💰 Kwota: {data['amount']}\n"
+                    response += f"💳 Płatność: {data['payment']}\n"
+                    response += f"🧾 Nr paragonu: {prefix}{current_number}\n"
+                    response += f"📦 Expense: {data['expense_item']}\n"
+                    response += f"📁 Kategoria: {data['category']}\n\n"
+                    
+                    send_message(chat_id, response)
 
-            zip_buffer.seek(0)
-
-            # Wyślij ZIP
-            files = {'document': ('archiwum.zip', zip_buffer.getvalue())}
-            requests.post(API_URL + 'sendDocument', data={'chat_id': chat_id}, files=files)
-
-            # Teraz wyślij każde zdjęcie po kolei z pełnym opisem
-            send_message(chat_id, f"📸 Wysyłam {len(user_analysis_results[user_id])} przeanalizowanych zdjęć:")
-            
-            for idx, (filename, img_data) in enumerate(user_photos[user_id]):
-                # Wyślij zdjęcie
-                with open(filename, 'rb') as f:
-                    files = {'photo': (f'zdjecie_{idx+1}.jpg', f, 'image/jpeg')}
-                    requests.post(API_URL + 'sendPhoto', data={'chat_id': chat_id}, files=files)
+                # Zapisz wszystkie dane do tabeli
+                send_message(chat_id, f"⏳ Zapisuję {len(user_analysis_results[user_id])} wierszy w Google Sheets...")
                 
-                # Wyślij opis
-                data = user_analysis_results[user_id][idx]
-                response = f"✅ Paragon rozpoznany!\n\n"
-                response += f"🏪 Dostawca: {data['supplier']}\n"
-                response += f"📅 Data: {data['date']}\n"
-                response += f"💰 Kwota: {data['amount']}\n"
-                response += f"💳 Płatność: {data['payment']}\n"
-                response += f"🧾 Nr paragonu: {base_name}{idx+1}\n"
-                response += f"📦 Expense: {data['expense_item']}\n"
-                response += f"📁 Kategoria: {data['category']}\n\n"
+                saved_count = 0
+                for data in user_analysis_results[user_id]:
+                    if save_to_sheet(data):
+                        saved_count += 1
                 
-                send_message(chat_id, response)
+                send_message(chat_id, f"✅ Zapisano {saved_count} z {len(user_analysis_results[user_id])} wierszy w tabeli!")
 
-            # Zapisz wszystkie dane do tabeli
-            send_message(chat_id, f"⏳ Zapisuję {len(user_analysis_results[user_id])} wierszy w Google Sheets...")
-            
-            saved_count = 0
-            for data in user_analysis_results[user_id]:
-                if save_to_sheet(data):
-                    saved_count += 1
-            
-            send_message(chat_id, f"✅ Zapisano {saved_count} z {len(user_analysis_results[user_id])} wierszy w tabeli!")
-
-            # Wyczyść stan
-            del user_states[user_id]
-            
-            # Usuń pliki tymczasowe
-            for filename, _ in user_photos[user_id]:
-                if os.path.exists(filename):
-                    os.remove(filename)
-            
-            del user_photos[user_id]
-            del user_analysis_results[user_id]
-
+                # Wyczyść stan i usuń pliki
+                del user_states[user_id]
+                
+                for filename, _ in user_photos[user_id]:
+                    if os.path.exists(filename):
+                        os.remove(filename)
+                
+                del user_photos[user_id]
+                del user_analysis_results[user_id]
+            else:
+                send_message(chat_id, "❌ Nazwa musi zawierać cyfry na końcu (np. b235)")
             return
 
-    # Normalna obsługa pojedynczego zdjęcia (poza trybem archiwizacji)
     if 'message' in update and 'photo' in update['message']:
         chat_id = update['message']['chat']['id']
         user_id = update['message']['from']['id']
 
-        # Jeśli użytkownik nie jest w trybie archiwizacji
         if user_id not in user_states:
             file_id = update['message']['photo'][-1]['file_id']
             file_info = requests.get(API_URL + f"getFile?file_id={file_id}", timeout=10).json()
