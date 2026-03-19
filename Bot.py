@@ -30,7 +30,7 @@ API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}/"
 # ==================== GOOGLE SHEETS ====================
 SHEET_ID = "1SHUyo_5sJYsQPiIIR9nCkAeJI2ZB5KQFx-1g0jXKaRw"
 # !!! WAŻNE: Zmień na dokładną nazwę swojego arkusza (sprawdź na dole tabeli) !!!
-SHEET_NAME = "Arkusz1"  # np. "Arkusz1", "Sheet1", "Лист1"
+SHEET_NAME = "Аркуш1"  # np. "Arkusz1", "Sheet1", "Лист1"
 
 # ==================== KONFIGURACJA AUTORYZACJI ====================
 DATA_FILE = "bot_data.json"  # Plik do przechowywania danych
