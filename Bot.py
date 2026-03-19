@@ -30,7 +30,61 @@ API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}/"
 # ==================== GOOGLE SHEETS ====================
 SHEET_ID = "1SHUyo_5sJYsQPiIIR9nCkAeJI2ZB5KQFx-1g0jXKaRw"
 # !!! WAŻNE: Zmień na dokładną nazwę swojego arkusza (sprawdź na dole tabeli) !!!
-SHEET_NAME = "Аркуш1"  # np. "Arkusz1", "Sheet1", "Лист1"
+SHEET_NAME = "Arkusz1"  # np. "Arkusz1", "Sheet1", "Лист1"
+
+# ==================== KONFIGURACJA AUTORYZACJI ====================
+DATA_FILE = "bot_data.json"  # Plik do przechowywania danych
+
+# Domyślne hasła (zostaną nadpisane przez dane z pliku, jeśli istnieją)
+USER_PASSWORDS = {
+    "user1234": {"used": False, "max_photos": 5, "used_by": None},
+    "user5678": {"used": False, "max_photos": 5, "used_by": None},
+    "user9012": {"used": False, "max_photos": 5, "used_by": None}
+}
+
+ADMIN_PASSWORDS = {
+    "admin08": True,
+    "admin09": True, 
+    "admin10": True,
+    "admin11": True,
+    "admin12": True
+}
+
+authorized_users = {}  # ID autoryzowanych użytkowników
+
+# ==================== FUNKCJE DO ZAPISU/ODCZYTU DANYCH ====================
+def load_data():
+    """Ładuje dane z pliku JSON"""
+    global authorized_users, USER_PASSWORDS
+    if os.path.exists(DATA_FILE):
+        try:
+            with open(DATA_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                authorized_users = data.get('authorized_users', {})
+                # Konwersja kluczy z powrotem na int (bo JSON zapisuje je jako stringi)
+                authorized_users = {int(k): v for k, v in authorized_users.items()}
+                USER_PASSWORDS = data.get('user_passwords', USER_PASSWORDS)
+                logging.info(f"✅ Wczytano dane z pliku {DATA_FILE}")
+        except Exception as e:
+            logging.error(f"❌ Błąd wczytywania danych: {e}")
+    else:
+        logging.info("📁 Brak pliku z danymi, używam domyślnych ustawień")
+
+def save_data():
+    """Zapisuje dane do pliku JSON"""
+    try:
+        data = {
+            'authorized_users': authorized_users,
+            'user_passwords': USER_PASSWORDS
+        }
+        with open(DATA_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        logging.info(f"✅ Zapisano dane do pliku {DATA_FILE}")
+    except Exception as e:
+        logging.error(f"❌ Błąd zapisu danych: {e}")
+
+# Wczytaj dane przy starcie
+load_data()
 
 # ==================== SŁOWNIKI ====================
 known_suppliers = {
@@ -143,7 +197,7 @@ supplier_categories = {
     "ruads": "others"
 }
 
-# ==================== STAN UŻYTKOWNIKÓW ====================
+# ==================== STAN UŻYTKOWNIKÓW (dla trybu archiwizacji) ====================
 user_states = {}
 user_photos = defaultdict(list)
 user_analysis_results = defaultdict(list)
@@ -236,6 +290,85 @@ def classify_receipt(supplier, amount_str, products=""):
 
 def get_receipt_fingerprint(receipt_data):
     return f"{receipt_data.get('supplier', '')}|{receipt_data.get('amount', '')}|{receipt_data.get('payment', '')}|{receipt_data.get('date', '')}"
+
+# ==================== FUNKCJE AUTORYZACJI ====================
+def check_authorization(user_id, message_text, chat_id):
+    """
+    Sprawdza autoryzację użytkownika z systemem wielu haseł.
+    Dane są automatycznie zapisywane do pliku JSON.
+    """
+    global USER_PASSWORDS, ADMIN_PASSWORDS, authorized_users
+    
+    # Jeśli użytkownik jest już autoryzowany
+    if user_id in authorized_users:
+        user_info = authorized_users[user_id]
+        
+        # Sprawdź limit dla zwykłych użytkowników
+        if user_info['type'] == 'user' and user_info['photos_used'] >= user_info['max_photos']:
+            send_message(chat_id, "❌ Limit zdjęć dla tego konta został wyczerpany. Hasło wygasło.")
+            return False
+        return True
+    
+    # Jeśli wiadomość to komenda – poproś o hasło
+    if message_text and message_text.startswith('/'):
+        send_message(chat_id, "🔒 Ten bot jest chroniony hasłem. Podaj hasło dostępu.")
+        return False
+    
+    # Sprawdź, czy to hasło użytkownika (jednorazowe, limit 5)
+    if message_text and message_text in USER_PASSWORDS:
+        password_info = USER_PASSWORDS[message_text]
+        
+        # Sprawdź, czy hasło nie zostało już użyte
+        if password_info['used']:
+            send_message(chat_id, "❌ To hasło zostało już wykorzystane przez innego użytkownika.")
+            return False
+        
+        # Autoryzuj użytkownika
+        authorized_users[user_id] = {
+            'type': 'user',
+            'max_photos': password_info['max_photos'],
+            'photos_used': 0
+        }
+        # Oznacz hasło jako użyte
+        USER_PASSWORDS[message_text]['used'] = True
+        USER_PASSWORDS[message_text]['used_by'] = user_id
+        save_data()  # Zapisz zmiany do pliku
+        send_message(chat_id, f"✅ Hasło poprawne! Możesz wysłać maksymalnie {password_info['max_photos']} zdjęć.")
+        return True
+    
+    # Sprawdź, czy to hasło administratora (wielokrotne, bez limitu)
+    if message_text and message_text in ADMIN_PASSWORDS:
+        # Autoryzuj użytkownika jako administratora
+        authorized_users[user_id] = {
+            'type': 'admin',
+            'photos_used': 0
+        }
+        save_data()  # Zapisz zmiany do pliku
+        send_message(chat_id, "✅ Hasło administratorskie! Nie masz limitu zdjęć.")
+        return True
+    
+    # Nieprawidłowe hasło
+    send_message(chat_id, "🔒 Nieprawidłowe hasło. Podaj poprawne hasło dostępu.")
+    return False
+
+def increment_photo_count(user_id, chat_id):
+    """Zwiększa licznik wysłanych zdjęć dla użytkownika i zapisuje do pliku"""
+    if user_id in authorized_users:
+        user_info = authorized_users[user_id]
+        
+        if user_info['type'] == 'user':
+            user_info['photos_used'] += 1
+            remaining = user_info['max_photos'] - user_info['photos_used']
+            logging.info(f"Użytkownik {user_id} wykorzystał {user_info['photos_used']}/{user_info['max_photos']} zdjęć")
+            save_data()  # Zapisz zmiany do pliku
+            
+            if remaining <= 0:
+                send_message(chat_id, f"⚠️ To było ostatnie zdjęcie z Twojego limitu. Dostęp wygasł.")
+            elif remaining <= 2:
+                send_message(chat_id, f"⚠️ Pozostało Ci tylko {remaining} zdjęć.")
+        # Admini nie mają licznika
+        return True
+    return False
 
 # ==================== FUNKCJE GOOGLE SHEETS ====================
 def get_google_sheet():
@@ -375,7 +508,7 @@ async def analyze_image_with_cohere(image_path, chat_id):
 # ==================== GŁÓWNA LOGIKA BOTA ====================
 def handle_start(chat_id):
     welcome_text = """
-🤖 <b>Receipt Scanner Bot v5.2</b>
+🤖 <b>Receipt Scanner Bot v6.0</b>
 
 📸 <b>Co potrafię:</b>
 • Rozpoznaję tekst z paragonów
@@ -395,23 +528,37 @@ def handle_start(chat_id):
 def handle_update(update):
     logging.info("=== NOWA WIADOMOŚĆ ===")
 
-    if 'message' in update and 'text' in update['message']:
-        text = update['message']['text']
+    # Sprawdź czy wiadomość zawiera tekst lub zdjęcie
+    if 'message' in update:
         chat_id = update['message']['chat']['id']
         user_id = update['message']['from']['id']
-
-        if text == '/start':
+        message_text = update['message'].get('text', '')
+        
+        # ===== AUTORYZACJA =====
+        if not check_authorization(user_id, message_text, chat_id):
+            return  # Jeśli nie autoryzowany, zakończ obsługę
+        
+        # Jeśli to zdjęcie, sprawdź limit
+        if 'photo' in update['message']:
+            if user_id in authorized_users:
+                user_info = authorized_users[user_id]
+                if user_info['type'] == 'user' and user_info['photos_used'] >= user_info['max_photos']:
+                    send_message(chat_id, "❌ Osiągnąłeś maksymalną liczbę zdjęć. Hasło wygasło.")
+                    return
+        
+        # Obsługa komend
+        if message_text == '/start':
             handle_start(chat_id)
             return
 
-        elif text == '/chuvan':
+        elif message_text == '/chuvan':
             user_states[user_id] = 'ARCHIVE_COLLECT'
             user_photos[user_id] = []
             user_analysis_results[user_id] = []
             send_message(chat_id, "🗂️ Tryb archiwizacji aktywowany. Wysyłaj zdjęcia – najpierw je przeanalizuję.\nGdy skończysz wysyłać, napisz /archiwum.")
             return
 
-        elif text == '/archiwum':
+        elif message_text == '/archiwum':
             if user_states.get(user_id) == 'ARCHIVE_COLLECT':
                 if not user_photos[user_id]:
                     send_message(chat_id, "❌ Nie wysłałeś żadnych zdjęć do archiwizacji.")
@@ -423,7 +570,7 @@ def handle_update(update):
                 send_message(chat_id, "❌ Najpierw wpisz /chuvan, żeby rozpocząć tryb archiwizacji.")
             return
 
-        elif text == '/tak':
+        elif message_text == '/tak':
             if user_states.get(user_id) == 'ARCHIVE_DECISION':
                 user_states[user_id] = 'ARCHIVE_ASK_NAME'
                 send_message(chat_id, "Podaj nazwę początkową (np. b235):")
@@ -431,7 +578,7 @@ def handle_update(update):
                 send_message(chat_id, "❌ Nie ma oczekującej archiwizacji.")
             return
 
-        elif text == '/nie':
+        elif message_text == '/nie':
             if user_states.get(user_id) == 'ARCHIVE_DECISION':
                 send_message(chat_id, f"⏳ Zapisuję {len(user_analysis_results[user_id])} zdjęć do tabeli...")
                 
@@ -477,6 +624,9 @@ def handle_update(update):
                 user_analysis_results[user_id].append(receipt_data)
                 user_photos[user_id].append((filename, img_data))
                 send_message(chat_id, f"✅ Otrzymałem ({current_count})")
+                
+                # Zwiększ licznik zdjęć dla autoryzacji
+                increment_photo_count(user_id, chat_id)
             else:
                 send_message(chat_id, "⚠️ Nie udało się przeanalizować zdjęcia")
                 os.remove(filename)
@@ -588,6 +738,9 @@ def handle_update(update):
 
             if receipt_data:
                 saved = save_to_sheet(receipt_data)
+                
+                # Zwiększ licznik zdjęć dla autoryzacji
+                increment_photo_count(user_id, chat_id)
 
                 response = f"✅ Paragon rozpoznany!\n\n"
                 response += f"🏪 Dostawca: {receipt_data['supplier']}\n"
@@ -632,7 +785,7 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     port = int(os.environ.get('PORT', 10000))
     server = HTTPServer(("0.0.0.0", port), Handler)
-    logging.info(f"🚀 Bot z Cohere AI i trybem archiwizacji wystartował na porcie {port}")
+    logging.info(f"🚀 Bot z Cohere AI, autoryzacją i trybem archiwizacji wystartował na porcie {port}")
     logging.info(f"📊 Google Sheets ID: {SHEET_ID}")
     server.serve_forever()
 
