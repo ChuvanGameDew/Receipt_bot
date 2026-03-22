@@ -146,6 +146,23 @@ def add_to_receipts_database(filename, receipt_data, group_fingerprint=None):
     save_receipts_database()
     return fingerprint
 
+def find_existing_row_by_fingerprint(sheet, fingerprint):
+    """
+    Znajduje istniejący wiersz po fingerprintzie (kolumna J)
+    """
+    try:
+        # Pobierz wszystkie wartości z kolumny J (10 kolumna)
+        col_j = sheet.col_values(10)
+        
+        for idx, value in enumerate(col_j, start=1):
+            if value == fingerprint and idx > 1:  # Pomijamy nagłówek
+                return idx
+        
+        return None
+    except Exception as e:
+        logging.error(f"Błąd wyszukiwania wiersza: {e}")
+        return None
+
 def update_sheet_group(fingerprint, items):
     if not items:
         return False
@@ -174,39 +191,47 @@ def save_group_to_sheet(data, fingerprint):
             logging.error("❌ Nie można uzyskać dostępu do arkusza")
             return False
         
-        all_records = sheet.get_all_records()
-        
+        # Sprawdź i przygotuj nagłówki
         headers = sheet.row_values(1)
+        
+        # Jeśli nie ma nagłówków, dodaj je
+        if not headers:
+            expected_headers = ['', 'Data', 'Dostawca', 'Numer paragonu', 'Platnosc', 'Expense', 'Kategoria', '', 'Kwota', 'fingerprint']
+            sheet.insert_row(expected_headers, 1)
+            headers = expected_headers
+            logging.info("✅ Dodano nagłówki do arkusza")
+        
+        # Upewnij się, że kolumna fingerprint istnieje
         if 'fingerprint' not in headers:
-            sheet.update_cell(1, 10, 'fingerprint')
+            # Znajdź indeks ostatniej kolumny i dodaj fingerprint
+            last_col = len(headers) + 1
+            sheet.update_cell(1, last_col, 'fingerprint')
+            logging.info(f"✅ Dodano kolumnę fingerprint na pozycji {last_col}")
         
-        existing_row = None
-        existing_row_num = None
+        # Znajdź istniejący wiersz
+        existing_row = find_existing_row_by_fingerprint(sheet, fingerprint)
         
-        for idx, record in enumerate(all_records, start=2):
-            if record.get('fingerprint') == fingerprint:
-                existing_row = record
-                existing_row_num = idx
-                break
-        
+        # Przygotuj wiersz do zapisu (10 kolumn)
         row = [
-            '',
-            clean_value(data.get('date', '')),
-            clean_value(data.get('supplier', '')),
-            clean_value(data.get('bill_numbers', '')),
-            clean_value(data.get('payment', '')),
-            clean_value(data.get('expense_item', '')),
-            clean_value(data.get('category', '')),
-            '',
-            clean_value(data.get('amount', '')),
-            fingerprint
+            '',  # Kolumna 1: puste
+            clean_value(data.get('date', '')),  # Kolumna 2: Data
+            clean_value(data.get('supplier', '')),  # Kolumna 3: Dostawca
+            clean_value(data.get('bill_numbers', '')),  # Kolumna 4: Numer paragonu
+            clean_value(data.get('payment', '')),  # Kolumna 5: Platnosc
+            clean_value(data.get('expense_item', '')),  # Kolumna 6: Expense
+            clean_value(data.get('category', '')),  # Kolumna 7: Kategoria
+            '',  # Kolumna 8: puste
+            clean_value(data.get('amount', '')),  # Kolumna 9: Kwota
+            fingerprint  # Kolumna 10: fingerprint
         ]
         
-        if existing_row_num:
-            for col, value in enumerate(row, start=1):
-                sheet.update_cell(existing_row_num, col, value)
-            logging.info(f"✅ Zaktualizowano grupę w wierszu {existing_row_num}: {data['bill_numbers']}")
+        if existing_row:
+            # Aktualizuj istniejący wiersz
+            for col_idx, value in enumerate(row, start=1):
+                sheet.update_cell(existing_row, col_idx, value)
+            logging.info(f"✅ Zaktualizowano grupę w wierszu {existing_row}: {data['bill_numbers']}")
         else:
+            # Dodaj nowy wiersz
             sheet.append_row(row)
             logging.info(f"✅ Dodano nową grupę: {data['bill_numbers']}")
         
@@ -646,7 +671,7 @@ async def analyze_image_with_cohere(image_path, chat_id):
 
 def handle_start(chat_id):
     welcome_text = """
-🤖 <b>Receipt Scanner Bot v8.0 - Grupowanie duplikatów!</b>
+🤖 <b>Receipt Scanner Bot v8.1 - Grupowanie duplikatów!</b>
 
 📸 <b>Co potrafię:</b>
 • Rozpoznaję tekst z paragonów
@@ -783,7 +808,6 @@ def handle_update(update):
             
             send_message(chat_id, f"⏳ Tworzę archiwum ZIP dla {len(user_photos[user_id])} zdjęć...")
             
-            # Wyślij informację, że proces się rozpoczął
             send_message(chat_id, "📦 Tworzenie pliku ZIP...")
 
             match = re.search(r'(\d+)$', base_name)
@@ -821,18 +845,15 @@ def handle_update(update):
                             zip_file.writestr(arcname, img_data)
                             file_count += 1
                             
-                            # Aktualizuj dane
                             user_analysis_results[user_id][idx]['bill_number'] = final_name
                     
                     send_message(chat_id, f"✅ Utworzono ZIP z {file_count} plikami")
                     
-                    # Przygotuj dane do wysyłki
                     zip_buffer.seek(0)
                     zip_data = zip_buffer.getvalue()
                     
                     send_message(chat_id, f"📤 Wysyłam archiwum ZIP ({len(zip_data) // 1024} KB)...")
                     
-                    # Wyślij ZIP
                     success = send_document(chat_id, zip_data, "archiwum.zip")
                     
                     if success:
