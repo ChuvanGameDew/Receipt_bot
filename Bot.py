@@ -14,6 +14,7 @@ import base64
 from datetime import datetime
 from collections import defaultdict
 from difflib import SequenceMatcher
+import traceback
 
 # ==================== KONFIGURACJA LOGOWANIA ====================
 logging.basicConfig(
@@ -52,7 +53,6 @@ ADMIN_PASSWORDS = {
 authorized_users = {}
 
 # ==================== BAZA DUPLIKATÓW ====================
-# Struktura: fingerprint -> [{'filename': 'b211', 'timestamp': ..., 'full_data': {...}}, ...]
 receipts_database = {}
 
 def load_receipts_database():
@@ -62,8 +62,6 @@ def load_receipts_database():
             with open("receipts_db.json", 'r', encoding='utf-8') as f:
                 receipts_database = json.load(f)
                 logging.info(f"✅ Wczytano {len(receipts_database)} unikalnych fingerprintów z bazy")
-                for fp, items in receipts_database.items():
-                    logging.info(f"   Fingerprint: {fp} -> {len(items)} paragonów")
         except Exception as e:
             logging.error(f"❌ Błąd wczytywania bazy: {e}")
             receipts_database = {}
@@ -77,27 +75,17 @@ def save_receipts_database():
         logging.error(f"❌ Błąd zapisu bazy: {e}")
 
 def calculate_fingerprint(receipt_data):
-    """Oblicza unikalny fingerprint paragonu do wykrywania duplikatów"""
     supplier = receipt_data.get('supplier', '')
     amount = receipt_data.get('amount', '')
     date = receipt_data.get('date', '')
-    
-    fingerprint = f"{supplier}|{amount}|{date}"
-    logging.info(f"Obliczony fingerprint: {fingerprint}")
-    return fingerprint
+    return f"{supplier}|{amount}|{date}"
 
 def find_duplicate_group(receipt_data, similarity_threshold=0.85):
-    """
-    Znajduje grupę duplikatów dla danego paragonu
-    Zwraca: (fingerprint, existing_items) lub (None, None)
-    """
     new_fingerprint = calculate_fingerprint(receipt_data)
     
-    # Sprawdź czy istnieje identyczny fingerprint
     if new_fingerprint in receipts_database:
         return new_fingerprint, receipts_database[new_fingerprint]
     
-    # Jeśli nie ma identycznego, sprawdź podobieństwo
     for fp, items in receipts_database.items():
         for item in items:
             original_data = item['full_data']
@@ -112,14 +100,9 @@ def find_duplicate_group(receipt_data, similarity_threshold=0.85):
     return None, None
 
 def get_next_filename_in_group(existing_filenames):
-    """
-    Generuje następną nazwę w grupie duplikatów
-    Jeśli są b211, b211.1, to zwróci b211.2
-    """
     if not existing_filenames:
         return None
     
-    # Znajdź bazową nazwę (bez suffixu)
     base_names = set()
     for name in existing_filenames:
         if '.' in name:
@@ -130,7 +113,6 @@ def get_next_filename_in_group(existing_filenames):
     
     if len(base_names) == 1:
         base_name = list(base_names)[0]
-        # Znajdź najwyższy suffix
         max_suffix = 0
         for name in existing_filenames:
             if '.' in name:
@@ -140,12 +122,9 @@ def get_next_filename_in_group(existing_filenames):
                 except:
                     pass
         return f"{base_name}.{max_suffix + 1}"
-    else:
-        # Różne nazwy bazowe - to nie powinno się zdarzyć dla grupy duplikatów
-        return None
+    return None
 
 def add_to_receipts_database(filename, receipt_data, group_fingerprint=None):
-    """Dodaje paragon do bazy duplikatów, grupując je"""
     if group_fingerprint:
         fingerprint = group_fingerprint
     else:
@@ -154,7 +133,6 @@ def add_to_receipts_database(filename, receipt_data, group_fingerprint=None):
     if fingerprint not in receipts_database:
         receipts_database[fingerprint] = []
     
-    # Sprawdź czy już nie ma tego pliku
     existing_filenames = [item['filename'] for item in receipts_database[fingerprint]]
     
     if filename not in existing_filenames:
@@ -169,24 +147,17 @@ def add_to_receipts_database(filename, receipt_data, group_fingerprint=None):
     return fingerprint
 
 def update_sheet_group(fingerprint, items):
-    """Aktualizuje wiersz w Google Sheets dla grupy duplikatów"""
     if not items:
         return False
     
-    # Posortuj po nazwie
     sorted_items = sorted(items, key=lambda x: x['filename'])
-    
-    # Połącz nazwy przecinkami
     filenames_str = ','.join([item['filename'] for item in sorted_items])
-    
-    # Weź dane z pierwszego paragonu (są takie same dla grupy)
     first_data = sorted_items[0]['full_data']
     
-    # Przygotuj dane do zapisu
     data = {
         'date': first_data.get('date', ''),
         'supplier': first_data.get('supplier', ''),
-        'bill_numbers': filenames_str,  # Wszystkie nazwy w jednej komórce
+        'bill_numbers': filenames_str,
         'payment': first_data.get('payment', ''),
         'expense_item': first_data.get('expense_item', ''),
         'category': first_data.get('category', ''),
@@ -196,7 +167,6 @@ def update_sheet_group(fingerprint, items):
     return save_group_to_sheet(data, fingerprint)
 
 def save_group_to_sheet(data, fingerprint):
-    """Zapisuje lub aktualizuje grupę duplikatów w Google Sheets"""
     logging.info(f"=== ZAPIS GRUPY DO GOOGLE SHEETS: {fingerprint} ===")
     try:
         sheet = get_google_sheet()
@@ -204,19 +174,12 @@ def save_group_to_sheet(data, fingerprint):
             logging.error("❌ Nie można uzyskać dostępu do arkusza")
             return False
         
-        # Szukamy czy istnieje już wiersz dla tego fingerprintu
         all_records = sheet.get_all_records()
         
-        # Sprawdź czy istnieje kolumna z fingerprintem (dodajemy nową kolumnę)
-        # Najpierw pobierz nagłówki
         headers = sheet.row_values(1)
-        
-        # Jeśli nie ma kolumny dla fingerprintu, dodajemy
         if 'fingerprint' not in headers:
-            # Znajdź odpowiednią kolumnę (po kolumnie I)
-            sheet.update_cell(1, 10, 'fingerprint')  # Kolumna J (10)
+            sheet.update_cell(1, 10, 'fingerprint')
         
-        # Szukaj istniejącego wiersza
         existing_row = None
         existing_row_num = None
         
@@ -227,25 +190,23 @@ def save_group_to_sheet(data, fingerprint):
                 break
         
         row = [
-            '',  # A - puste
-            clean_value(data.get('date', '')),  # B - data
-            clean_value(data.get('supplier', '')),  # C - dostawca
-            clean_value(data.get('bill_numbers', '')),  # D - numery paragonów (wszystkie)
-            clean_value(data.get('payment', '')),  # E - płatność
-            clean_value(data.get('expense_item', '')),  # F - expense item
-            clean_value(data.get('category', '')),  # G - kategoria
-            '',  # H - puste
-            clean_value(data.get('amount', '')),  # I - kwota
-            fingerprint  # J - fingerprint (do identyfikacji grupy)
+            '',
+            clean_value(data.get('date', '')),
+            clean_value(data.get('supplier', '')),
+            clean_value(data.get('bill_numbers', '')),
+            clean_value(data.get('payment', '')),
+            clean_value(data.get('expense_item', '')),
+            clean_value(data.get('category', '')),
+            '',
+            clean_value(data.get('amount', '')),
+            fingerprint
         ]
         
         if existing_row_num:
-            # Aktualizuj istniejący wiersz
             for col, value in enumerate(row, start=1):
                 sheet.update_cell(existing_row_num, col, value)
             logging.info(f"✅ Zaktualizowano grupę w wierszu {existing_row_num}: {data['bill_numbers']}")
         else:
-            # Dodaj nowy wiersz
             sheet.append_row(row)
             logging.info(f"✅ Dodano nową grupę: {data['bill_numbers']}")
         
@@ -285,7 +246,6 @@ def save_data():
     except Exception as e:
         logging.error(f"❌ Błąd zapisu danych: {e}")
 
-# Wczytaj dane przy starcie
 load_data()
 load_receipts_database()
 
@@ -415,6 +375,31 @@ def send_message(chat_id, text):
     except Exception as e:
         logging.error(f"send_message error: {e}")
 
+def send_document(chat_id, file_data, filename):
+    """Wysyła dokument z lepszą obsługą błędów"""
+    url = API_URL + "sendDocument"
+    try:
+        files = {
+            'document': (filename, file_data, 'application/zip')
+        }
+        data = {'chat_id': chat_id}
+        
+        logging.info(f"Wysyłam dokument: {filename}, rozmiar: {len(file_data)} bajtów")
+        r = requests.post(url, data=data, files=files, timeout=60)
+        
+        logging.info(f"Status wysyłania dokumentu: {r.status_code}")
+        if r.status_code == 200:
+            logging.info("✅ Dokument wysłany pomyślnie")
+            return True
+        else:
+            logging.error(f"❌ Błąd wysyłania dokumentu: {r.text}")
+            send_message(chat_id, f"❌ Błąd wysyłania ZIP: {r.status_code}")
+            return False
+    except Exception as e:
+        logging.error(f"❌ Wyjątek przy wysyłaniu dokumentu: {e}")
+        send_message(chat_id, f"❌ Błąd wysyłania ZIP: {str(e)}")
+        return False
+
 def format_date(raw_date):
     if not raw_date or raw_date == "UNKNOWN" or raw_date == "":
         return "UNKNOWN"
@@ -491,7 +476,6 @@ def classify_receipt(supplier, amount_str, products=""):
                 return category, category
     return "ingredients", "ingredients"
 
-# ==================== FUNKCJE AUTORYZACJI ====================
 def check_authorization(user_id, message_text, chat_id):
     global USER_PASSWORDS, ADMIN_PASSWORDS, authorized_users
     
@@ -558,7 +542,6 @@ def increment_photo_count(user_id, chat_id):
         return True
     return False
 
-# ==================== FUNKCJE GOOGLE SHEETS ====================
 def get_google_sheet():
     logging.info("=== PRÓBA POŁĄCZENIA Z GOOGLE SHEETS ===")
     possible_paths = [
@@ -592,7 +575,6 @@ def clean_value(value):
         return ""
     return str(value).strip()
 
-# ==================== ANALIZA ZDJĘCIA PRZEZ COHERE ====================
 async def analyze_image_with_cohere(image_path, chat_id):
     try:
         with open(image_path, "rb") as f:
@@ -662,7 +644,6 @@ async def analyze_image_with_cohere(image_path, chat_id):
         logging.exception(f"Błąd analizy obrazu: {e}")
         return None
 
-# ==================== GŁÓWNA LOGIKA BOTA ====================
 def handle_start(chat_id):
     welcome_text = """
 🤖 <b>Receipt Scanner Bot v8.0 - Grupowanie duplikatów!</b>
@@ -738,21 +719,16 @@ def handle_update(update):
                 send_message(chat_id, f"⏳ Zapisuję {len(user_analysis_results[user_id])} zdjęć do tabeli...")
                 
                 for data in user_analysis_results[user_id]:
-                    # Sprawdź czy to duplikat
                     group_fp, group_items = find_duplicate_group(data)
                     
                     if group_fp:
-                        # To duplikat - dodaj do istniejącej grupy
                         filename = data.get('bill_number', f"receipt_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
                         add_to_receipts_database(filename, data, group_fp)
-                        # Zaktualizuj grupę w sheets
                         update_sheet_group(group_fp, receipts_database[group_fp])
                         send_message(chat_id, f"⚠️ Dodano duplikat do grupy: {filename}")
                     else:
-                        # Nowy paragon - utwórz nową grupę
                         filename = data.get('bill_number', f"receipt_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
                         group_fp = add_to_receipts_database(filename, data)
-                        # Zapisz nową grupę
                         update_sheet_group(group_fp, receipts_database[group_fp])
                 
                 send_message(chat_id, f"✅ Zapisano {len(user_analysis_results[user_id])} wierszy w tabeli!")
@@ -806,6 +782,9 @@ def handle_update(update):
             base_name = text.strip()
             
             send_message(chat_id, f"⏳ Tworzę archiwum ZIP dla {len(user_photos[user_id])} zdjęć...")
+            
+            # Wyślij informację, że proces się rozpoczął
+            send_message(chat_id, "📦 Tworzenie pliku ZIP...")
 
             match = re.search(r'(\d+)$', base_name)
             if match:
@@ -813,51 +792,60 @@ def handle_update(update):
                 prefix = base_name[:match.start()]
                 
                 zip_buffer = io.BytesIO()
-                with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-                    for idx, (filename, img_data) in enumerate(user_photos[user_id]):
-                        current_number = start_num + idx
-                        base_filename = f"{prefix}{current_number}"
-                        
-                        # Sprawdź czy to duplikat
-                        data = user_analysis_results[user_id][idx]
-                        group_fp, group_items = find_duplicate_group(data)
-                        
-                        if group_fp:
-                            # Duplikat - dodaj do istniejącej grupy
-                            existing_filenames = [item['filename'] for item in group_items]
-                            final_name = get_next_filename_in_group(existing_filenames)
-                            if not final_name:
-                                final_name = f"{base_filename}.1"
-                            
-                            add_to_receipts_database(final_name, data, group_fp)
-                            update_sheet_group(group_fp, receipts_database[group_fp])
-                            send_message(chat_id, f"⚠️ <b>WYKRYTO DUPLIKAT!</b>\n"
-                                                  f"Grupa: {', '.join(existing_filenames)}\n"
-                                                  f"Dodano: {final_name}")
-                        else:
-                            # Nowy paragon
-                            final_name = base_filename
-                            group_fp = add_to_receipts_database(final_name, data)
-                            update_sheet_group(group_fp, receipts_database[group_fp])
-                        
-                        arcname = f"{final_name}.jpg"
-                        zip_file.writestr(arcname, img_data)
-                        
-                        # Aktualizuj dane
-                        user_analysis_results[user_id][idx]['bill_number'] = final_name
+                file_count = 0
                 
-                zip_buffer.seek(0)
-
-                # Wyślij ZIP
                 try:
-                    files = {'document': ('archiwum.zip', zip_buffer.getvalue())}
-                    response = requests.post(API_URL + 'sendDocument', data={'chat_id': chat_id}, files=files, timeout=30)
-                    logging.info(f"Wysyłanie ZIP: {response.status_code}")
-                    if response.status_code != 200:
-                        send_message(chat_id, "❌ Błąd wysyłania archiwum ZIP")
+                    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+                        for idx, (filename, img_data) in enumerate(user_photos[user_id]):
+                            current_number = start_num + idx
+                            base_filename = f"{prefix}{current_number}"
+                            
+                            data = user_analysis_results[user_id][idx]
+                            group_fp, group_items = find_duplicate_group(data)
+                            
+                            if group_fp:
+                                existing_filenames = [item['filename'] for item in group_items]
+                                final_name = get_next_filename_in_group(existing_filenames)
+                                if not final_name:
+                                    final_name = f"{base_filename}.1"
+                                
+                                add_to_receipts_database(final_name, data, group_fp)
+                                update_sheet_group(group_fp, receipts_database[group_fp])
+                                send_message(chat_id, f"⚠️ <b>WYKRYTO DUPLIKAT!</b>\nGrupa: {', '.join(existing_filenames)}\nDodano: {final_name}")
+                            else:
+                                final_name = base_filename
+                                group_fp = add_to_receipts_database(final_name, data)
+                                update_sheet_group(group_fp, receipts_database[group_fp])
+                            
+                            arcname = f"{final_name}.jpg"
+                            zip_file.writestr(arcname, img_data)
+                            file_count += 1
+                            
+                            # Aktualizuj dane
+                            user_analysis_results[user_id][idx]['bill_number'] = final_name
+                    
+                    send_message(chat_id, f"✅ Utworzono ZIP z {file_count} plikami")
+                    
+                    # Przygotuj dane do wysyłki
+                    zip_buffer.seek(0)
+                    zip_data = zip_buffer.getvalue()
+                    
+                    send_message(chat_id, f"📤 Wysyłam archiwum ZIP ({len(zip_data) // 1024} KB)...")
+                    
+                    # Wyślij ZIP
+                    success = send_document(chat_id, zip_data, "archiwum.zip")
+                    
+                    if success:
+                        send_message(chat_id, "✅ Archiwum ZIP wysłane pomyślnie!")
+                    else:
+                        send_message(chat_id, "❌ Nie udało się wysłać archiwum ZIP")
+                        return
+                    
                 except Exception as e:
-                    logging.error(f"Błąd wysyłania ZIP: {e}")
-                    send_message(chat_id, f"❌ Błąd wysyłania archiwum: {str(e)}")
+                    logging.error(f"Błąd tworzenia ZIP: {e}")
+                    logging.error(traceback.format_exc())
+                    send_message(chat_id, f"❌ Błąd tworzenia archiwum: {str(e)}")
+                    return
 
                 send_message(chat_id, f"📸 Wysyłam {len(user_analysis_results[user_id])} przeanalizowanych zdjęć:")
                 
@@ -865,21 +853,23 @@ def handle_update(update):
                     try:
                         with open(filename, 'rb') as f:
                             files = {'photo': (f'zdjecie_{idx+1}.jpg', f, 'image/jpeg')}
-                            requests.post(API_URL + 'sendPhoto', data={'chat_id': chat_id}, files=files, timeout=30)
+                            response = requests.post(API_URL + 'sendPhoto', data={'chat_id': chat_id}, files=files, timeout=30)
+                            if response.status_code != 200:
+                                logging.error(f"Błąd wysyłania zdjęcia {idx}: {response.text}")
                     except Exception as e:
                         logging.error(f"Błąd wysyłania zdjęcia {idx}: {e}")
                     
                     data = user_analysis_results[user_id][idx]
-                    response = f"✅ Paragon rozpoznany!\n\n"
-                    response += f"🏪 Dostawca: {data['supplier']}\n"
-                    response += f"📅 Data: {data['date']}\n"
-                    response += f"💰 Kwota: {data['amount']}\n"
-                    response += f"💳 Płatność: {data['payment']}\n"
-                    response += f"🧾 Nr paragonu: {data['bill_number']}\n"
-                    response += f"📦 Expense: {data['expense_item']}\n"
-                    response += f"📁 Kategoria: {data['category']}\n\n"
+                    response_text = f"✅ Paragon rozpoznany!\n\n"
+                    response_text += f"🏪 Dostawca: {data['supplier']}\n"
+                    response_text += f"📅 Data: {data['date']}\n"
+                    response_text += f"💰 Kwota: {data['amount']}\n"
+                    response_text += f"💳 Płatność: {data['payment']}\n"
+                    response_text += f"🧾 Nr paragonu: {data['bill_number']}\n"
+                    response_text += f"📦 Expense: {data['expense_item']}\n"
+                    response_text += f"📁 Kategoria: {data['category']}\n\n"
                     
-                    send_message(chat_id, response)
+                    send_message(chat_id, response_text)
 
                 send_message(chat_id, f"✅ Zakończono! Wszystkie dane zostały zgrupowane w tabeli.")
 
@@ -919,11 +909,9 @@ def handle_update(update):
             loop.close()
 
             if receipt_data:
-                # Sprawdź czy to duplikat
                 group_fp, group_items = find_duplicate_group(receipt_data)
                 
                 if group_fp:
-                    # To duplikat - dodaj do istniejącej grupy
                     existing_filenames = [item['filename'] for item in group_items]
                     final_name = get_next_filename_in_group(existing_filenames)
                     if not final_name:
@@ -945,7 +933,6 @@ def handle_update(update):
                     
                     send_message(chat_id, response)
                 else:
-                    # Nowy paragon - utwórz nową grupę
                     final_name = receipt_data.get('bill_number', f"receipt_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
                     group_fp = add_to_receipts_database(final_name, receipt_data)
                     update_sheet_group(group_fp, receipts_database[group_fp])
@@ -969,7 +956,6 @@ def handle_update(update):
             os.remove(filename)
             return
 
-# ==================== SERWER HTTP ====================
 class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         content_len = int(self.headers.get('Content-Length', 0))
