@@ -13,6 +13,7 @@ import logging
 import base64
 from datetime import datetime
 from collections import defaultdict
+from difflib import SequenceMatcher
 
 # ==================== KONFIGURACJA LOGOWANIA ====================
 logging.basicConfig(
@@ -29,12 +30,11 @@ API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}/"
 
 # ==================== GOOGLE SHEETS ====================
 SHEET_ID = "1SHUyo_5sJYsQPiIIR9nCkAeJI2ZB5KQFx-1g0jXKaRw"
-SHEET_NAME = "Аркуш1"  # ZMIEŃ NA SWOJĄ NAZWĘ ARKUSZA
+SHEET_NAME = "Аркуш1"
 
 # ==================== KONFIGURACJA AUTORYZACJI ====================
 DATA_FILE = "bot_data.json"
 
-# Domyślne hasła – wszystkie są jednorazowe!
 USER_PASSWORDS = {
     "user1234": {"used": False, "max_photos": 5, "used_by": None},
     "user5678": {"used": False, "max_photos": 5, "used_by": None},
@@ -49,7 +49,105 @@ ADMIN_PASSWORDS = {
     "admin12": {"used": False, "used_by": None}
 }
 
-authorized_users = {}  # ID autoryzowanych użytkowników
+authorized_users = {}
+
+# ==================== BAZA DUPLIKATÓW ====================
+receipts_database = {}  # {fingerprint: [{'filename': 'b456', 'timestamp': ..., 'full_data': ...}]}
+
+def load_receipts_database():
+    """Ładuje bazę paragonów z pliku"""
+    global receipts_database
+    if os.path.exists("receipts_db.json"):
+        try:
+            with open("receipts_db.json", 'r', encoding='utf-8') as f:
+                receipts_database = json.load(f)
+                logging.info(f"✅ Wczytano {len(receipts_database)} unikalnych paragonów z bazy")
+        except Exception as e:
+            logging.error(f"❌ Błąd wczytywania bazy: {e}")
+            receipts_database = {}
+
+def save_receipts_database():
+    """Zapisuje bazę paragonów do pliku"""
+    try:
+        with open("receipts_db.json", 'w', encoding='utf-8') as f:
+            json.dump(receipts_database, f, indent=2, ensure_ascii=False)
+        logging.info(f"✅ Zapisano {len(receipts_database)} unikalnych paragonów do bazy")
+    except Exception as e:
+        logging.error(f"❌ Błąd zapisu bazy: {e}")
+
+def calculate_fingerprint(receipt_data):
+    """Oblicza unikalny fingerprint paragonu do wykrywania duplikatów"""
+    # Używamy kombinacji: dostawca + kwota + data + ostatnie 4 cyfry numeru paragonu
+    supplier = receipt_data.get('supplier', '')
+    amount = receipt_data.get('amount', '')
+    date = receipt_data.get('date', '')
+    bill_number = receipt_data.get('bill_number', '')
+    
+    # Weź ostatnie 4 znaki numeru paragonu (jeśli są)
+    bill_suffix = bill_number[-4:] if len(bill_number) >= 4 else bill_number
+    
+    fingerprint = f"{supplier}|{amount}|{date}|{bill_suffix}"
+    
+    # Opcjonalnie: użyj podobieństwa tekstu dla lepszego wykrywania
+    return fingerprint
+
+def is_duplicate_receipt(receipt_data, similarity_threshold=0.85):
+    """
+    Sprawdza czy paragon jest duplikatem istniejącego
+    Zwraca: (is_duplicate, original_filename, similarity_score)
+    """
+    new_fingerprint = calculate_fingerprint(receipt_data)
+    
+    # Sprawdź czy istnieje identyczny fingerprint
+    if new_fingerprint in receipts_database:
+        original = receipts_database[new_fingerprint][0]  # Weź pierwszy z listy
+        return True, original['filename'], 1.0
+    
+    # Jeśli nie ma identycznego, sprawdź podobieństwo
+    for fp, items in receipts_database.items():
+        for item in items:
+            # Porównaj dane
+            original_data = item['full_data']
+            
+            # Oblicz podobieństwo
+            similarity = SequenceMatcher(None, 
+                f"{original_data.get('supplier', '')}{original_data.get('amount', '')}{original_data.get('date', '')}",
+                f"{receipt_data.get('supplier', '')}{receipt_data.get('amount', '')}{receipt_data.get('date', '')}"
+            ).ratio()
+            
+            if similarity >= similarity_threshold:
+                return True, item['filename'], similarity
+    
+    return False, None, 0.0
+
+def get_next_filename(base_name, existing_filenames):
+    """
+    Generuje następną nazwę pliku z suffixem .1, .2 itd.
+    Przykład: b456 -> b456.1, b456.2
+    """
+    if base_name not in existing_filenames:
+        return base_name
+    
+    counter = 1
+    while f"{base_name}.{counter}" in existing_filenames:
+        counter += 1
+    
+    return f"{base_name}.{counter}"
+
+def add_to_receipts_database(filename, receipt_data):
+    """Dodaje paragon do bazy duplikatów"""
+    fingerprint = calculate_fingerprint(receipt_data)
+    
+    if fingerprint not in receipts_database:
+        receipts_database[fingerprint] = []
+    
+    receipts_database[fingerprint].append({
+        'filename': filename,
+        'timestamp': datetime.now().isoformat(),
+        'full_data': receipt_data
+    })
+    
+    save_receipts_database()
 
 # ==================== FUNKCJE DO ZAPISU/ODCZYTU DANYCH ====================
 def load_data():
@@ -60,7 +158,6 @@ def load_data():
             with open(DATA_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 authorized_users = data.get('authorized_users', {})
-                # Konwersja kluczy z powrotem na int
                 authorized_users = {int(k): v for k, v in authorized_users.items()}
                 USER_PASSWORDS = data.get('user_passwords', USER_PASSWORDS)
                 ADMIN_PASSWORDS = data.get('admin_passwords', ADMIN_PASSWORDS)
@@ -86,6 +183,7 @@ def save_data():
 
 # Wczytaj dane przy starcie
 load_data()
+load_receipts_database()  # Wczytaj bazę duplikatów
 
 # ==================== SŁOWNIKI ====================
 known_suppliers = {
@@ -289,81 +387,60 @@ def classify_receipt(supplier, amount_str, products=""):
                 return category, category
     return "ingredients", "ingredients"
 
-def get_receipt_fingerprint(receipt_data):
-    return f"{receipt_data.get('supplier', '')}|{receipt_data.get('amount', '')}|{receipt_data.get('payment', '')}|{receipt_data.get('date', '')}"
-
 # ==================== FUNKCJE AUTORYZACJI ====================
 def check_authorization(user_id, message_text, chat_id):
-    """
-    Sprawdza autoryzację użytkownika – wszystkie hasła są jednorazowe!
-    """
     global USER_PASSWORDS, ADMIN_PASSWORDS, authorized_users
     
-    # Jeśli użytkownik jest już autoryzowany
     if user_id in authorized_users:
         user_info = authorized_users[user_id]
-        
-        # Sprawdź limit dla zwykłych użytkowników
         if user_info['type'] == 'user' and user_info['photos_used'] >= user_info['max_photos']:
             send_message(chat_id, "❌ Limit zdjęć dla tego konta został wyczerpany. Hasło wygasło.")
             return False
         return True
     
-    # Jeśli wiadomość to komenda – poproś o hasło
     if message_text and message_text.startswith('/'):
         send_message(chat_id, "🔒 Ten bot jest chroniony hasłem. Podaj hasło dostępu.")
         return False
     
-    # Sprawdź, czy to hasło użytkownika (jednorazowe)
     if message_text and message_text in USER_PASSWORDS:
-        # Sprawdź, czy hasło nie zostało już użyte
         if USER_PASSWORDS[message_text]['used']:
             send_message(chat_id, "❌ To hasło zostało już wykorzystane przez innego użytkownika.")
             return False
         
-        # Autoryzuj użytkownika
         authorized_users[user_id] = {
             'type': 'user',
             'max_photos': USER_PASSWORDS[message_text]['max_photos'],
             'photos_used': 0,
             'used_password': message_text
         }
-        # Oznacz hasło jako użyte
         USER_PASSWORDS[message_text]['used'] = True
         USER_PASSWORDS[message_text]['used_by'] = user_id
         save_data()
         send_message(chat_id, f"✅ Hasło poprawne! Możesz wysłać maksymalnie {USER_PASSWORDS[message_text]['max_photos']} zdjęć.")
         return True
     
-    # Sprawdź, czy to hasło administratora (też jednorazowe!)
     if message_text and message_text in ADMIN_PASSWORDS:
-        # Sprawdź, czy hasło nie zostało już użyte
         if ADMIN_PASSWORDS[message_text]['used']:
             send_message(chat_id, "❌ To hasło administratorskie zostało już wykorzystane przez innego użytkownika.")
             return False
         
-        # Autoryzuj użytkownika jako administratora
         authorized_users[user_id] = {
             'type': 'admin',
             'photos_used': 0,
             'used_password': message_text
         }
-        # Oznacz hasło jako użyte
         ADMIN_PASSWORDS[message_text]['used'] = True
         ADMIN_PASSWORDS[message_text]['used_by'] = user_id
         save_data()
         send_message(chat_id, "✅ Hasło administratorskie! Nie masz limitu zdjęć.")
         return True
     
-    # Nieprawidłowe hasło
     send_message(chat_id, "🔒 Nieprawidłowe hasło. Podaj poprawne hasło dostępu.")
     return False
 
 def increment_photo_count(user_id, chat_id):
-    """Zwiększa licznik wysłanych zdjęć dla użytkownika"""
     if user_id in authorized_users:
         user_info = authorized_users[user_id]
-        
         if user_info['type'] == 'user':
             user_info['photos_used'] += 1
             remaining = user_info['max_photos'] - user_info['photos_used']
@@ -390,7 +467,6 @@ def get_google_sheet():
         if os.path.exists(path):
             creds_path = path
             logging.info(f"✅ Znaleziono plik credentials: {path}")
-            logging.info(f"   Rozmiar pliku: {os.path.getsize(path)} bajtów")
             break
     if not creds_path:
         logging.error("❌ NIE ZNALEZIONO pliku credentials!")
@@ -398,17 +474,13 @@ def get_google_sheet():
     try:
         scope = ["https://www.googleapis.com/auth/spreadsheets"]
         creds = Credentials.from_service_account_file(creds_path, scopes=scope)
-        logging.info("✅ Credentials wczytane pomyślnie")
         client = gspread.authorize(creds)
-        logging.info("✅ Autoryzacja gspread OK")
         sheet = client.open_by_key(SHEET_ID)
-        logging.info(f"✅ Tabela otwarta, tytuł: {sheet.title}")
         worksheet = sheet.worksheet(SHEET_NAME)
         logging.info(f"✅ Arkusz otwarty, nazwa: {SHEET_NAME}")
         return worksheet
     except Exception as e:
         logging.error(f"❌ BŁĄD połączenia: {str(e)}")
-        logging.error(f"   Typ błędu: {type(e).__name__}")
         return None
 
 def clean_value(value):
@@ -424,15 +496,15 @@ def save_to_sheet(data):
             logging.error("❌ Nie można uzyskać dostępu do arkusza")
             return False
         row = [
-            '',                                      # Kolumna A - pusta
-            clean_value(data.get('date', '')),       # Kolumna B - data
-            clean_value(data.get('supplier', '')),   # Kolumna C - dostawca
-            clean_value(data.get('bill_number', '')),# Kolumna D - numer paragonu
-            clean_value(data.get('payment', '')),    # Kolumna E - płatność
-            clean_value(data.get('expense_item', '')), # Kolumna F - expense item
-            clean_value(data.get('category', '')),   # Kolumna G - kategoria
-            '',                                      # Kolumna H - pusta
-            clean_value(data.get('amount', ''))      # Kolumna I - kwota
+            '',
+            clean_value(data.get('date', '')),
+            clean_value(data.get('supplier', '')),
+            clean_value(data.get('bill_number', '')),
+            clean_value(data.get('payment', '')),
+            clean_value(data.get('expense_item', '')),
+            clean_value(data.get('category', '')),
+            '',
+            clean_value(data.get('amount', ''))
         ]
         logging.info(f"   Próba zapisu wiersza: {row}")
         sheet.append_row(row)
@@ -486,13 +558,11 @@ async def analyze_image_with_cohere(image_path, chat_id):
             ai_response = json.loads(result['choices'][0]['message']['content'])
             logging.info(f"✅ Odpowiedź Cohere: {ai_response}")
 
-            supplier = ai_response.get('firma', 'UNKNOWN')
+            supplier = find_supplier(ai_response.get('firma', 'UNKNOWN'))
             date = format_date(ai_response.get('data', 'UNKNOWN'))
             amount = clean_amount(ai_response.get('kwota', 'UNKNOWN'))
             payment = normalize_payment(ai_response.get('platnosc', 'UNKNOWN'))
             bill_number = ai_response.get('numer', 'UNKNOWN')
-            if bill_number == "UNKNOWN" or not bill_number:
-                bill_number = os.path.splitext(os.path.basename(image_path))[0]
 
             expense_item, category = classify_receipt(supplier, amount, "")
 
@@ -515,12 +585,12 @@ async def analyze_image_with_cohere(image_path, chat_id):
 # ==================== GŁÓWNA LOGIKA BOTA ====================
 def handle_start(chat_id):
     welcome_text = """
-🤖 <b>Receipt Scanner Bot v6.1</b>
+🤖 <b>Receipt Scanner Bot v7.0 - z wykrywaniem duplikatów!</b>
 
 📸 <b>Co potrafię:</b>
 • Rozpoznaję tekst z paragonów
 • Klasyfikuję dostawców
-• Rozróżniam metody płatności
+• WYKRYWAM DUPLIKATY i automatycznie nadaję nazwy b456.1, b456.2
 • Zapisuję dane do Google Sheets
 • Tryb archiwizacji /chuvan
 • System haseł jednorazowych
@@ -528,7 +598,7 @@ def handle_start(chat_id):
 📋 <b>Jak używać:</b>
 1. Wyślij mi zdjęcie paragonu
 2. AI przeanalizuje obraz
-3. Otrzymasz podsumowanie
+3. Jeśli to duplikat – dostaniesz nazwę z suffixem
 4. Dane trafią do tabeli
 """
     send_message(chat_id, welcome_text)
@@ -541,11 +611,9 @@ def handle_update(update):
         user_id = update['message']['from']['id']
         message_text = update['message'].get('text', '')
         
-        # ===== AUTORYZACJA =====
         if not check_authorization(user_id, message_text, chat_id):
             return
         
-        # Jeśli to zdjęcie, sprawdź limit
         if 'photo' in update['message']:
             if user_id in authorized_users:
                 user_info = authorized_users[user_id]
@@ -553,7 +621,6 @@ def handle_update(update):
                     send_message(chat_id, "❌ Osiągnąłeś maksymalną liczbę zdjęć. Hasło wygasło.")
                     return
         
-        # Obsługa komend
         if message_text == '/start':
             handle_start(chat_id)
             return
@@ -589,7 +656,23 @@ def handle_update(update):
             if user_states.get(user_id) == 'ARCHIVE_DECISION':
                 send_message(chat_id, f"⏳ Zapisuję {len(user_analysis_results[user_id])} zdjęć do tabeli...")
                 
-                for data in user_analysis_results[user_id]:
+                # Zbierz istniejące nazwy w bazie dla tego prefixu
+                existing_names = set()
+                for fp, items in receipts_database.items():
+                    for item in items:
+                        existing_names.add(item['filename'])
+                
+                for idx, data in enumerate(user_analysis_results[user_id]):
+                    # Generuj nazwę z uwzględnieniem duplikatów
+                    base_name = f"archiwum_{idx+1}"
+                    final_name = get_next_filename(base_name, existing_names)
+                    existing_names.add(final_name)
+                    
+                    # Dodaj do bazy
+                    add_to_receipts_database(final_name, data)
+                    
+                    # Zapisz do sheets
+                    data['bill_number'] = final_name
                     save_to_sheet(data)
                 
                 send_message(chat_id, f"✅ Zapisano {len(user_analysis_results[user_id])} wierszy w tabeli!")
@@ -601,7 +684,6 @@ def handle_update(update):
                 send_message(chat_id, "❌ Nie ma oczekującej archiwizacji.")
             return
 
-    # Obsługa zdjęć w trybie archiwizacji
     if 'message' in update and 'photo' in update['message']:
         chat_id = update['message']['chat']['id']
         user_id = update['message']['from']['id']
@@ -629,15 +711,12 @@ def handle_update(update):
                 user_analysis_results[user_id].append(receipt_data)
                 user_photos[user_id].append((filename, img_data))
                 send_message(chat_id, f"✅ Otrzymałem ({current_count})")
-                
-                # Zwiększ licznik zdjęć
                 increment_photo_count(user_id, chat_id)
             else:
                 send_message(chat_id, "⚠️ Nie udało się przeanalizować zdjęcia")
                 os.remove(filename)
             return
 
-    # Obsługa odpowiedzi z nazwą początkową
     if 'message' in update and 'text' in update['message']:
         text = update['message']['text']
         chat_id = update['message']['chat']['id']
@@ -653,12 +732,39 @@ def handle_update(update):
                 start_num = int(match.group(1))
                 prefix = base_name[:match.start()]
                 
+                # Zbierz istniejące nazwy w bazie
+                existing_names = set()
+                for fp, items in receipts_database.items():
+                    for item in items:
+                        existing_names.add(item['filename'])
+                
                 zip_buffer = io.BytesIO()
                 with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
                     for idx, (filename, img_data) in enumerate(user_photos[user_id]):
                         current_number = start_num + idx
-                        arcname = f"{prefix}{current_number}.jpg"
+                        base_filename = f"{prefix}{current_number}"
+                        
+                        # Sprawdź czy to duplikat
+                        is_dup, original_name, similarity = is_duplicate_receipt(user_analysis_results[user_id][idx])
+                        
+                        if is_dup and similarity >= 0.85:  # Jeśli pewny duplikat
+                            final_name = get_next_filename(original_name, existing_names)
+                            send_message(chat_id, f"⚠️ <b>WYKRYTO DUPLIKAT!</b>\n"
+                                                  f"Oryginał: {original_name}\n"
+                                                  f"Nowa nazwa: {final_name}\n"
+                                                  f"Podobieństwo: {similarity*100:.1f}%", chat_id)
+                        else:
+                            final_name = get_next_filename(base_filename, existing_names)
+                        
+                        existing_names.add(final_name)
+                        arcname = f"{final_name}.jpg"
                         zip_file.writestr(arcname, img_data)
+                        
+                        # Zapisz do bazy duplikatów
+                        add_to_receipts_database(final_name, user_analysis_results[user_id][idx])
+                        
+                        # Aktualizuj dane dla sheets
+                        user_analysis_results[user_id][idx]['bill_number'] = final_name
                 
                 zip_buffer.seek(0)
 
@@ -673,13 +779,12 @@ def handle_update(update):
                         requests.post(API_URL + 'sendPhoto', data={'chat_id': chat_id}, files=files)
                     
                     data = user_analysis_results[user_id][idx]
-                    current_number = start_num + idx
                     response = f"✅ Paragon rozpoznany!\n\n"
                     response += f"🏪 Dostawca: {data['supplier']}\n"
                     response += f"📅 Data: {data['date']}\n"
                     response += f"💰 Kwota: {data['amount']}\n"
                     response += f"💳 Płatność: {data['payment']}\n"
-                    response += f"🧾 Nr paragonu: {prefix}{current_number}\n"
+                    response += f"🧾 Nr paragonu: {data['bill_number']}\n"
                     response += f"📦 Expense: {data['expense_item']}\n"
                     response += f"📁 Kategoria: {data['category']}\n\n"
                     
@@ -688,9 +793,7 @@ def handle_update(update):
                 send_message(chat_id, f"⏳ Zapisuję {len(user_analysis_results[user_id])} wierszy w Google Sheets...")
 
                 saved_count = 0
-                for idx, data in enumerate(user_analysis_results[user_id]):
-                    current_number = start_num + idx
-                    data['bill_number'] = f"{prefix}{current_number}"
+                for data in user_analysis_results[user_id]:
                     if save_to_sheet(data):
                         saved_count += 1
 
@@ -732,6 +835,35 @@ def handle_update(update):
             loop.close()
 
             if receipt_data:
+                # Sprawdź czy to duplikat
+                is_duplicate, original_name, similarity = is_duplicate_receipt(receipt_data)
+                
+                # Zbierz istniejące nazwy
+                existing_names = set()
+                for fp, items in receipts_database.items():
+                    for item in items:
+                        existing_names.add(item['filename'])
+                
+                if is_duplicate and similarity >= 0.85:
+                    # To jest duplikat - generuj nazwę z suffixem
+                    final_name = get_next_filename(original_name, existing_names)
+                    send_message(chat_id, f"⚠️ <b>WYKRYTO DUPLIKAT!</b>\n"
+                                          f"Oryginał: {original_name}\n"
+                                          f"Nowa nazwa: {final_name}\n"
+                                          f"Podobieństwo: {similarity*100:.1f}%\n\n"
+                                          f"✅ Paragon zostanie zapisany jako {final_name}")
+                else:
+                    # To nie jest duplikat - użyj oryginalnego numeru lub wygeneruj nowy
+                    if receipt_data['bill_number'] != "UNKNOWN" and receipt_data['bill_number']:
+                        final_name = get_next_filename(receipt_data['bill_number'], existing_names)
+                    else:
+                        final_name = get_next_filename(f"receipt_{datetime.now().strftime('%Y%m%d_%H%M%S')}", existing_names)
+                
+                # Dodaj do bazy duplikatów
+                add_to_receipts_database(final_name, receipt_data)
+                
+                # Zapisz do sheets
+                receipt_data['bill_number'] = final_name
                 saved = save_to_sheet(receipt_data)
                 
                 increment_photo_count(user_id, chat_id)
@@ -741,7 +873,7 @@ def handle_update(update):
                 response += f"📅 Data: {receipt_data['date']}\n"
                 response += f"💰 Kwota: {receipt_data['amount']}\n"
                 response += f"💳 Płatność: {receipt_data['payment']}\n"
-                response += f"🧾 Nr paragonu: {receipt_data['bill_number']}\n"
+                response += f"🧾 Nr paragonu: {final_name}\n"
                 response += f"📦 Expense: {receipt_data['expense_item']}\n"
                 response += f"📁 Kategoria: {receipt_data['category']}\n\n"
 
@@ -779,7 +911,7 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     port = int(os.environ.get('PORT', 10000))
     server = HTTPServer(("0.0.0.0", port), Handler)
-    logging.info(f"🚀 Bot z Cohere AI, autoryzacją i trybem archiwizacji wystartował na porcie {port}")
+    logging.info(f"🚀 Bot z wykrywaniem duplikatów wystartował na porcie {port}")
     logging.info(f"📊 Google Sheets ID: {SHEET_ID}")
     server.serve_forever()
 
