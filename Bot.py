@@ -148,16 +148,31 @@ def add_to_receipts_database(filename, receipt_data, group_fingerprint=None):
 
 def find_existing_row_by_fingerprint(sheet, fingerprint):
     """
-    Znajduje istniejący wiersz po fingerprintzie (kolumna J)
+    Znajduje istniejący wiersz po fingerprintzie (używamy ukrytej kolumny do wyszukiwania)
     """
     try:
-        # Pobierz wszystkie wartości z kolumny J (10 kolumna)
-        col_j = sheet.col_values(10)
+        # Próbuj znaleźć w kolumnie K (11) jeśli istnieje, inaczej używamy pamięci
+        try:
+            col_k = sheet.col_values(11)
+            for idx, value in enumerate(col_k, start=1):
+                if value == fingerprint and idx > 1:
+                    return idx
+        except:
+            pass
         
-        for idx, value in enumerate(col_j, start=1):
-            if value == fingerprint and idx > 1:  # Pomijamy nagłówek
-                return idx
-        
+        # Jeśli nie ma kolumny K, musimy przeszukać wszystkie wiersze
+        # To jest mniej wydajne, ale działa
+        all_data = sheet.get_all_values()
+        for idx, row in enumerate(all_data, start=1):
+            if idx > 1:  # Pomijamy nagłówek
+                # Sprawdź czy któryś wiersz pasuje (po dostawcy, kwocie, dacie)
+                if len(row) >= 7:
+                    supplier = row[2]  # Kolumna C
+                    amount = row[8]  # Kolumna I
+                    date = row[1]  # Kolumna B
+                    check_fingerprint = f"{supplier}|{amount}|{date}"
+                    if check_fingerprint == fingerprint:
+                        return idx
         return None
     except Exception as e:
         logging.error(f"Błąd wyszukiwania wiersza: {e}")
@@ -184,45 +199,37 @@ def update_sheet_group(fingerprint, items):
     return save_group_to_sheet(data, fingerprint)
 
 def save_group_to_sheet(data, fingerprint):
-    logging.info(f"=== ZAPIS GRUPY DO GOOGLE SHEETS: {fingerprint} ===")
+    logging.info(f"=== ZAPIS GRUPY DO GOOGLE SHEETS ===")
     try:
         sheet = get_google_sheet()
         if not sheet:
             logging.error("❌ Nie można uzyskać dostępu do arkusza")
             return False
         
-        # Sprawdź i przygotuj nagłówki
+        # Sprawdź nagłówki
         headers = sheet.row_values(1)
         
         # Jeśli nie ma nagłówków, dodaj je
-        if not headers:
-            expected_headers = ['', 'Data', 'Dostawca', 'Numer paragonu', 'Platnosc', 'Expense', 'Kategoria', '', 'Kwota', 'fingerprint']
+        if not headers or all(h == '' for h in headers):
+            expected_headers = ['', 'Data', 'Dostawca', 'Numer paragonu', 'Platnosc', 'Expense', 'Kategoria', '', 'Kwota']
             sheet.insert_row(expected_headers, 1)
             headers = expected_headers
             logging.info("✅ Dodano nagłówki do arkusza")
         
-        # Upewnij się, że kolumna fingerprint istnieje
-        if 'fingerprint' not in headers:
-            # Znajdź indeks ostatniej kolumny i dodaj fingerprint
-            last_col = len(headers) + 1
-            sheet.update_cell(1, last_col, 'fingerprint')
-            logging.info(f"✅ Dodano kolumnę fingerprint na pozycji {last_col}")
-        
         # Znajdź istniejący wiersz
         existing_row = find_existing_row_by_fingerprint(sheet, fingerprint)
         
-        # Przygotuj wiersz do zapisu (10 kolumn)
+        # Przygotuj wiersz do zapisu (tylko 9 kolumn)
         row = [
-            '',  # Kolumna 1: puste
-            clean_value(data.get('date', '')),  # Kolumna 2: Data
-            clean_value(data.get('supplier', '')),  # Kolumna 3: Dostawca
-            clean_value(data.get('bill_numbers', '')),  # Kolumna 4: Numer paragonu
-            clean_value(data.get('payment', '')),  # Kolumna 5: Platnosc
-            clean_value(data.get('expense_item', '')),  # Kolumna 6: Expense
-            clean_value(data.get('category', '')),  # Kolumna 7: Kategoria
-            '',  # Kolumna 8: puste
-            clean_value(data.get('amount', '')),  # Kolumna 9: Kwota
-            fingerprint  # Kolumna 10: fingerprint
+            '',  # Kolumna A: puste
+            clean_value(data.get('date', '')),  # Kolumna B: Data
+            clean_value(data.get('supplier', '')),  # Kolumna C: Dostawca
+            clean_value(data.get('bill_numbers', '')),  # Kolumna D: Numer paragonu
+            clean_value(data.get('payment', '')),  # Kolumna E: Platnosc
+            clean_value(data.get('expense_item', '')),  # Kolumna F: Expense
+            clean_value(data.get('category', '')),  # Kolumna G: Kategoria
+            '',  # Kolumna H: puste
+            clean_value(data.get('amount', ''))  # Kolumna I: Kwota
         ]
         
         if existing_row:
@@ -671,7 +678,7 @@ async def analyze_image_with_cohere(image_path, chat_id):
 
 def handle_start(chat_id):
     welcome_text = """
-🤖 <b>Receipt Scanner Bot v8.1 - Grupowanie duplikatów!</b>
+🤖 <b>Receipt Scanner Bot v8.2 - Grupowanie duplikatów!</b>
 
 📸 <b>Co potrafię:</b>
 • Rozpoznaję tekst z paragonów
