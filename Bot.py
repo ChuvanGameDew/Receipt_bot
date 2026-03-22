@@ -13,7 +13,6 @@ import logging
 import base64
 from datetime import datetime
 from collections import defaultdict
-from difflib import SequenceMatcher
 import traceback
 
 # ==================== KONFIGURACJA LOGOWANIA ====================
@@ -53,6 +52,7 @@ ADMIN_PASSWORDS = {
 authorized_users = {}
 
 # ==================== BAZA DUPLIKATÓW ====================
+# Klucz: f"{supplier}|{amount}" -> lista paragonów
 receipts_database = {}
 
 def load_receipts_database():
@@ -61,7 +61,7 @@ def load_receipts_database():
         try:
             with open("receipts_db.json", 'r', encoding='utf-8') as f:
                 receipts_database = json.load(f)
-                logging.info(f"✅ Wczytano {len(receipts_database)} unikalnych fingerprintów z bazy")
+                logging.info(f"✅ Wczytano {len(receipts_database)} unikalnych grup (firma+kasda) z bazy")
         except Exception as e:
             logging.error(f"❌ Błąd wczytywania bazy: {e}")
             receipts_database = {}
@@ -70,115 +70,86 @@ def save_receipts_database():
     try:
         with open("receipts_db.json", 'w', encoding='utf-8') as f:
             json.dump(receipts_database, f, indent=2, ensure_ascii=False)
-        logging.info(f"✅ Zapisano {len(receipts_database)} fingerprintów do bazy")
+        logging.info(f"✅ Zapisano {len(receipts_database)} grup do bazy")
     except Exception as e:
         logging.error(f"❌ Błąd zapisu bazy: {e}")
 
-def calculate_fingerprint(receipt_data):
+def get_group_key(supplier, amount):
+    """Tworzy klucz grupy: firma + kwota (bez daty!)"""
+    return f"{supplier}|{amount}"
+
+def find_duplicate_group(receipt_data):
+    """Sprawdza czy istnieje grupa o tej samej firmie i kwocie"""
     supplier = receipt_data.get('supplier', '')
     amount = receipt_data.get('amount', '')
-    date = receipt_data.get('date', '')
-    return f"{supplier}|{amount}|{date}"
-
-def find_duplicate_group(receipt_data, similarity_threshold=0.85):
-    new_fingerprint = calculate_fingerprint(receipt_data)
+    group_key = get_group_key(supplier, amount)
     
-    if new_fingerprint in receipts_database:
-        return new_fingerprint, receipts_database[new_fingerprint]
-    
-    for fp, items in receipts_database.items():
-        for item in items:
-            original_data = item['full_data']
-            similarity = SequenceMatcher(None, 
-                f"{original_data.get('supplier', '')}{original_data.get('amount', '')}{original_data.get('date', '')}",
-                f"{receipt_data.get('supplier', '')}{receipt_data.get('amount', '')}{receipt_data.get('date', '')}"
-            ).ratio()
-            
-            if similarity >= similarity_threshold:
-                return fp, items
-    
+    if group_key in receipts_database:
+        return group_key, receipts_database[group_key]
     return None, None
 
 def get_next_filename_in_group(existing_filenames):
+    """Generuje następną nazwę w grupie duplikatów"""
     if not existing_filenames:
         return None
     
-    base_names = set()
+    # Znajdź bazową nazwę (pierwszy plik w grupie)
+    base_name = existing_filenames[0].split('.')[0]
+    
+    max_suffix = 0
     for name in existing_filenames:
         if '.' in name:
-            base = name.split('.')[0]
-        else:
-            base = name
-        base_names.add(base)
+            try:
+                suffix = int(name.split('.')[1])
+                max_suffix = max(max_suffix, suffix)
+            except:
+                pass
     
-    if len(base_names) == 1:
-        base_name = list(base_names)[0]
-        max_suffix = 0
-        for name in existing_filenames:
-            if '.' in name:
-                try:
-                    suffix = int(name.split('.')[1])
-                    max_suffix = max(max_suffix, suffix)
-                except:
-                    pass
-        return f"{base_name}.{max_suffix + 1}"
-    return None
+    return f"{base_name}.{max_suffix + 1}"
 
-def add_to_receipts_database(filename, receipt_data, group_fingerprint=None):
-    if group_fingerprint:
-        fingerprint = group_fingerprint
+def add_to_receipts_database(filename, receipt_data, group_key=None):
+    """Dodaje paragon do bazy duplikatów"""
+    if group_key:
+        key = group_key
     else:
-        fingerprint = calculate_fingerprint(receipt_data)
+        key = get_group_key(receipt_data.get('supplier', ''), receipt_data.get('amount', ''))
     
-    if fingerprint not in receipts_database:
-        receipts_database[fingerprint] = []
+    if key not in receipts_database:
+        receipts_database[key] = []
     
-    existing_filenames = [item['filename'] for item in receipts_database[fingerprint]]
+    existing_filenames = [item['filename'] for item in receipts_database[key]]
     
     if filename not in existing_filenames:
-        receipts_database[fingerprint].append({
+        receipts_database[key].append({
             'filename': filename,
             'timestamp': datetime.now().isoformat(),
             'full_data': receipt_data
         })
-        logging.info(f"✅ Dodano {filename} do grupy {fingerprint}")
+        logging.info(f"✅ Dodano {filename} do grupy {key}")
     
     save_receipts_database()
-    return fingerprint
+    return key
 
-def find_existing_row_by_fingerprint(sheet, fingerprint):
+def find_existing_row_by_supplier_amount(sheet, supplier, amount):
     """
-    Znajduje istniejący wiersz po fingerprintzie (używamy ukrytej kolumny do wyszukiwania)
+    Znajduje istniejący wiersz po firmie i kwocie
     """
     try:
-        # Próbuj znaleźć w kolumnie K (11) jeśli istnieje, inaczej używamy pamięci
-        try:
-            col_k = sheet.col_values(11)
-            for idx, value in enumerate(col_k, start=1):
-                if value == fingerprint and idx > 1:
-                    return idx
-        except:
-            pass
-        
-        # Jeśli nie ma kolumny K, musimy przeszukać wszystkie wiersze
-        # To jest mniej wydajne, ale działa
         all_data = sheet.get_all_values()
         for idx, row in enumerate(all_data, start=1):
             if idx > 1:  # Pomijamy nagłówek
-                # Sprawdź czy któryś wiersz pasuje (po dostawcy, kwocie, dacie)
-                if len(row) >= 7:
-                    supplier = row[2]  # Kolumna C
-                    amount = row[8]  # Kolumna I
-                    date = row[1]  # Kolumna B
-                    check_fingerprint = f"{supplier}|{amount}|{date}"
-                    if check_fingerprint == fingerprint:
+                if len(row) >= 9:
+                    row_supplier = row[2]  # Kolumna C
+                    row_amount = row[8]    # Kolumna I
+                    if row_supplier == supplier and row_amount == amount:
                         return idx
         return None
     except Exception as e:
         logging.error(f"Błąd wyszukiwania wiersza: {e}")
         return None
 
-def update_sheet_group(fingerprint, items):
+def update_sheet_group(group_key, items):
+    """Aktualizuje grupę w Google Sheets"""
     if not items:
         return False
     
@@ -196,10 +167,10 @@ def update_sheet_group(fingerprint, items):
         'amount': first_data.get('amount', '')
     }
     
-    return save_group_to_sheet(data, fingerprint)
+    return save_group_to_sheet(data, first_data.get('supplier', ''), first_data.get('amount', ''))
 
-def save_group_to_sheet(data, fingerprint):
-    logging.info(f"=== ZAPIS GRUPY DO GOOGLE SHEETS ===")
+def save_group_to_sheet(data, supplier, amount):
+    logging.info(f"=== ZAPIS GRUPY DO GOOGLE SHEETS: {supplier} | {amount} ===")
     try:
         sheet = get_google_sheet()
         if not sheet:
@@ -216,10 +187,10 @@ def save_group_to_sheet(data, fingerprint):
             headers = expected_headers
             logging.info("✅ Dodano nagłówki do arkusza")
         
-        # Znajdź istniejący wiersz
-        existing_row = find_existing_row_by_fingerprint(sheet, fingerprint)
+        # Znajdź istniejący wiersz po firmie i kwocie
+        existing_row = find_existing_row_by_supplier_amount(sheet, supplier, amount)
         
-        # Przygotuj wiersz do zapisu (tylko 9 kolumn)
+        # Przygotuj wiersz do zapisu
         row = [
             '',  # Kolumna A: puste
             clean_value(data.get('date', '')),  # Kolumna B: Data
@@ -381,10 +352,6 @@ supplier_categories = {
     "eppco": "fuel",
     "al ansari": "salary",
     "ansari": "salary",
-    "sudhi": "maintenance",
-    "al ershad": "maintenance",
-    "al mumtaz": "maintenance",
-    "fahen": "maintenance",
     "foodics": "others",
     "drc": "others",
     "value bag": "others",
@@ -408,18 +375,14 @@ def send_message(chat_id, text):
         logging.error(f"send_message error: {e}")
 
 def send_document(chat_id, file_data, filename):
-    """Wysyła dokument z lepszą obsługą błędów"""
     url = API_URL + "sendDocument"
     try:
-        files = {
-            'document': (filename, file_data, 'application/zip')
-        }
+        files = {'document': (filename, file_data, 'application/zip')}
         data = {'chat_id': chat_id}
         
         logging.info(f"Wysyłam dokument: {filename}, rozmiar: {len(file_data)} bajtów")
         r = requests.post(url, data=data, files=files, timeout=60)
         
-        logging.info(f"Status wysyłania dokumentu: {r.status_code}")
         if r.status_code == 200:
             logging.info("✅ Dokument wysłany pomyślnie")
             return True
@@ -678,22 +641,20 @@ async def analyze_image_with_cohere(image_path, chat_id):
 
 def handle_start(chat_id):
     welcome_text = """
-🤖 <b>Receipt Scanner Bot v8.2 - Grupowanie duplikatów!</b>
+🤖 <b>Receipt Scanner Bot v9.0 - Wykrywanie duplikatów po FIRMIE i KWOŚCIE!</b>
 
 📸 <b>Co potrafię:</b>
 • Rozpoznaję tekst z paragonów
 • Klasyfikuję dostawców
-• GRUPUJĘ DUPLIKATY w jednym wierszu (b211,b211.1,b211.2)
-• Automatycznie nadaję nazwy z suffixami
+• GRUPUJĘ DUPLIKATY po FIRMIE i KWOŚCIE (bez daty!)
+• Automatycznie nadaję nazwy z suffixami (b700, b701, b702...)
 • Zapisuję dane do Google Sheets
 • Tryb archiwizacji /chuvan
-• System haseł jednorazowych
 
-📋 <b>Jak używać:</b>
-1. Wyślij mi zdjęcie paragonu
-2. AI przeanalizuje obraz
-3. Duplikaty są grupowane w jednym wierszu
-4. Dane trafiają do tabeli
+📋 <b>Jak działa wykrywanie duplikatów:</b>
+• Jeśli firma i kwota są takie same → to DUPLIKAT
+• Przykład: AL ANSARI EXCHANGE | 1923,00 → b701, b702 w jednym wierszu
+• Różne kwoty → osobne wiersze
 """
     send_message(chat_id, welcome_text)
 
@@ -741,7 +702,7 @@ def handle_update(update):
         elif message_text == '/tak':
             if user_states.get(user_id) == 'ARCHIVE_DECISION':
                 user_states[user_id] = 'ARCHIVE_ASK_NAME'
-                send_message(chat_id, "Podaj nazwę początkową (np. b235):")
+                send_message(chat_id, "Podaj nazwę początkową (np. b700):")
             else:
                 send_message(chat_id, "❌ Nie ma oczekującej archiwizacji.")
             return
@@ -751,17 +712,17 @@ def handle_update(update):
                 send_message(chat_id, f"⏳ Zapisuję {len(user_analysis_results[user_id])} zdjęć do tabeli...")
                 
                 for data in user_analysis_results[user_id]:
-                    group_fp, group_items = find_duplicate_group(data)
+                    group_key, group_items = find_duplicate_group(data)
                     
-                    if group_fp:
+                    if group_key:
                         filename = data.get('bill_number', f"receipt_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
-                        add_to_receipts_database(filename, data, group_fp)
-                        update_sheet_group(group_fp, receipts_database[group_fp])
+                        add_to_receipts_database(filename, data, group_key)
+                        update_sheet_group(group_key, receipts_database[group_key])
                         send_message(chat_id, f"⚠️ Dodano duplikat do grupy: {filename}")
                     else:
                         filename = data.get('bill_number', f"receipt_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
-                        group_fp = add_to_receipts_database(filename, data)
-                        update_sheet_group(group_fp, receipts_database[group_fp])
+                        group_key = add_to_receipts_database(filename, data)
+                        update_sheet_group(group_key, receipts_database[group_key])
                 
                 send_message(chat_id, f"✅ Zapisano {len(user_analysis_results[user_id])} wierszy w tabeli!")
                 
@@ -814,7 +775,6 @@ def handle_update(update):
             base_name = text.strip()
             
             send_message(chat_id, f"⏳ Tworzę archiwum ZIP dla {len(user_photos[user_id])} zdjęć...")
-            
             send_message(chat_id, "📦 Tworzenie pliku ZIP...")
 
             match = re.search(r'(\d+)$', base_name)
@@ -832,21 +792,21 @@ def handle_update(update):
                             base_filename = f"{prefix}{current_number}"
                             
                             data = user_analysis_results[user_id][idx]
-                            group_fp, group_items = find_duplicate_group(data)
+                            group_key, group_items = find_duplicate_group(data)
                             
-                            if group_fp:
+                            if group_key:
                                 existing_filenames = [item['filename'] for item in group_items]
                                 final_name = get_next_filename_in_group(existing_filenames)
                                 if not final_name:
                                     final_name = f"{base_filename}.1"
                                 
-                                add_to_receipts_database(final_name, data, group_fp)
-                                update_sheet_group(group_fp, receipts_database[group_fp])
-                                send_message(chat_id, f"⚠️ <b>WYKRYTO DUPLIKAT!</b>\nGrupa: {', '.join(existing_filenames)}\nDodano: {final_name}")
+                                add_to_receipts_database(final_name, data, group_key)
+                                update_sheet_group(group_key, receipts_database[group_key])
+                                send_message(chat_id, f"⚠️ <b>WYKRYTO DUPLIKAT!</b>\nFirma: {data['supplier']}\nKwota: {data['amount']}\nGrupa: {', '.join(existing_filenames)}\nDodano: {final_name}")
                             else:
                                 final_name = base_filename
-                                group_fp = add_to_receipts_database(final_name, data)
-                                update_sheet_group(group_fp, receipts_database[group_fp])
+                                group_key = add_to_receipts_database(final_name, data)
+                                update_sheet_group(group_key, receipts_database[group_key])
                             
                             arcname = f"{final_name}.jpg"
                             zip_file.writestr(arcname, img_data)
@@ -871,7 +831,6 @@ def handle_update(update):
                     
                 except Exception as e:
                     logging.error(f"Błąd tworzenia ZIP: {e}")
-                    logging.error(traceback.format_exc())
                     send_message(chat_id, f"❌ Błąd tworzenia archiwum: {str(e)}")
                     return
 
@@ -881,9 +840,7 @@ def handle_update(update):
                     try:
                         with open(filename, 'rb') as f:
                             files = {'photo': (f'zdjecie_{idx+1}.jpg', f, 'image/jpeg')}
-                            response = requests.post(API_URL + 'sendPhoto', data={'chat_id': chat_id}, files=files, timeout=30)
-                            if response.status_code != 200:
-                                logging.error(f"Błąd wysyłania zdjęcia {idx}: {response.text}")
+                            requests.post(API_URL + 'sendPhoto', data={'chat_id': chat_id}, files=files, timeout=30)
                     except Exception as e:
                         logging.error(f"Błąd wysyłania zdjęcia {idx}: {e}")
                     
@@ -910,7 +867,7 @@ def handle_update(update):
                 del user_photos[user_id]
                 del user_analysis_results[user_id]
             else:
-                send_message(chat_id, "❌ Nazwa musi zawierać cyfry na końcu (np. b235)")
+                send_message(chat_id, "❌ Nazwa musi zawierać cyfry na końcu (np. b700)")
             return
 
     # Normalna obsługa pojedynczego zdjęcia
@@ -937,33 +894,31 @@ def handle_update(update):
             loop.close()
 
             if receipt_data:
-                group_fp, group_items = find_duplicate_group(receipt_data)
+                group_key, group_items = find_duplicate_group(receipt_data)
                 
-                if group_fp:
+                if group_key:
                     existing_filenames = [item['filename'] for item in group_items]
                     final_name = get_next_filename_in_group(existing_filenames)
                     if not final_name:
                         final_name = f"{receipt_data.get('bill_number', 'receipt')}.1"
                     
-                    add_to_receipts_database(final_name, receipt_data, group_fp)
-                    update_sheet_group(group_fp, receipts_database[group_fp])
+                    add_to_receipts_database(final_name, receipt_data, group_key)
+                    update_sheet_group(group_key, receipts_database[group_key])
                     
                     response = f"⚠️ <b>WYKRYTO DUPLIKAT!</b>\n\n"
+                    response += f"🏪 Firma: {receipt_data['supplier']}\n"
+                    response += f"💰 Kwota: {receipt_data['amount']}\n"
                     response += f"📁 Grupa: {', '.join(existing_filenames)}\n"
                     response += f"➕ Dodano: {final_name}\n\n"
-                    response += f"🏪 Dostawca: {receipt_data['supplier']}\n"
-                    response += f"📅 Data: {receipt_data['date']}\n"
-                    response += f"💰 Kwota: {receipt_data['amount']}\n"
-                    response += f"💳 Płatność: {receipt_data['payment']}\n"
-                    response += f"📦 Expense: {receipt_data['expense_item']}\n"
-                    response += f"📁 Kategoria: {receipt_data['category']}\n\n"
+                    response += f"📅 Data oryginału: {group_items[0]['full_data'].get('date', 'UNKNOWN')}\n"
+                    response += f"📅 Data duplikatu: {receipt_data['date']}\n\n"
                     response += "📊 Zaktualizowano grupę w Google Sheets!"
                     
                     send_message(chat_id, response)
                 else:
                     final_name = receipt_data.get('bill_number', f"receipt_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
-                    group_fp = add_to_receipts_database(final_name, receipt_data)
-                    update_sheet_group(group_fp, receipts_database[group_fp])
+                    group_key = add_to_receipts_database(final_name, receipt_data)
+                    update_sheet_group(group_key, receipts_database[group_key])
                     
                     increment_photo_count(user_id, chat_id)
                     
@@ -1005,7 +960,7 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     port = int(os.environ.get('PORT', 10000))
     server = HTTPServer(("0.0.0.0", port), Handler)
-    logging.info(f"🚀 Bot z grupowaniem duplikatów wystartował na porcie {port}")
+    logging.info(f"🚀 Bot z wykrywaniem duplikatów po FIRMIE i KWOŚCIE wystartował na porcie {port}")
     logging.info(f"📊 Google Sheets ID: {SHEET_ID}")
     server.serve_forever()
 
